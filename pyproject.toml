@@ -5,6 +5,7 @@ description = "Descriptive SQL analyst agent for a Shopify-shaped e-commerce dat
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
+    "sqlglot>=30.19.0",
 ]
 
 [project.optional-dependencies]
