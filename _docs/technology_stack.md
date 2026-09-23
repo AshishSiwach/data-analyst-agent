@@ -18,7 +18,7 @@ The stack has to visibly demonstrate four things: **tool calling** (`run_sql`, p
 | **Anthropic Claude** (fast/cheap tier) | Mature native tool-calling with strict schema adherence; strong SQL-generation and self-correction on fed-back errors | Functionally comparable to GPT-4o-mini here — no decisive edge that would change the recommendation |
 | **Self-hosted open-source (Llama/Qwen class)** | Near-zero marginal cost; strong "no vendor lock-in" portfolio story | Weaker structured/tool-calling reliability out of the box; adds real hosting/serving infrastructure the 9–11 day budget has no room for |
 
-**Recommendation: GPT-4o-mini.** Mature, cheap, reliable function-calling — the bounded-3-retry loop and the eval harness both depend on the model consistently emitting well-formed tool calls rather than prose-wrapped SQL, and this tier delivers that at a cost that leaves comfortable headroom under the per-session cap. Claude is an equally valid alternative if provider preference changes later; nothing else in the stack depends on which one is chosen. Self-hosted is ruled out purely on budget, not capability.
+**Decision: GPT-4o-mini.** Mature, cheap, reliable function-calling — the bounded-3-retry loop and the eval harness both depend on the model consistently emitting well-formed tool calls rather than prose-wrapped SQL, and this tier delivers that at a cost that leaves comfortable headroom under the per-session cap. Locked for v1 — every LLM-invoking call in `implementation_plan.md` (`generate_sql`, `narrative.wrap`, `diagnosis.diagnose`) targets the OpenAI API specifically, not a provider-agnostic interface. Self-hosted is ruled out purely on budget, not capability.
 
 ## 2. Orchestration
 
@@ -106,7 +106,7 @@ The stack has to visibly demonstrate four things: **tool calling** (`run_sql`, p
 
 | Layer | Choice |
 |---|---|
-| LLM provider | Claude, fast/cheap tier — native tool-calling |
+| LLM provider | OpenAI GPT-4o-mini — native tool-calling |
 | Orchestration | Hand-rolled bounded loop on the provider SDK; `pydantic` for the typed entities |
 | Database | DuckDB, read-only connection |
 | SQL guardrail | `sqlglot` statement-type validation |
