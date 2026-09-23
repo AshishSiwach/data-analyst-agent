@@ -1,24 +1,42 @@
 """S08+ acceptance tests for data.views. This file grows one `test_v_*`
-function per view slice (S08-S12); S08 adds `test_v_orders`.
+function per view slice (S08-S12); S08 adds `test_v_orders`, S09 adds
+`test_v_order_lines`.
 
-Building v_orders costs nothing (pure SQL over the already-ingested raw
-table), so - unlike S07's categorize tests - this file is fully
-self-contained: it ingests into an isolated tmp_path DB and builds the
-view itself, rather than assuming a pre-built table.
+Building v_orders and v_order_lines costs nothing (pure SQL over the
+already-ingested raw table), so the v_orders tests below are fully
+self-contained: they ingest into an isolated tmp_path DB and build the
+view themselves.
+
+v_order_lines is different: it depends on dim_product_category (S07),
+which costs real (if small) money to build via the OpenAI API. Its tests
+therefore follow S07's pattern instead - they target the already-built
+default DB and skip with a clear message if raw_online_retail,
+dim_product_category, or v_orders isn't there yet, rather than silently
+re-triggering a paid classification pass on every test run.
 """
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import duckdb
 import pytest
 
-from data_analyst_agent.data.ingest import ingest
+from data_analyst_agent.data.ingest import DEFAULT_DB_PATH, ingest
 from data_analyst_agent.data.views import build
 
 # Independently computed via a separate pandas script (not this module's
 # SQL) replicating the same three cleaning rules by hand, per S08's
 # required evaluation case.
 EXPECTED_UK_NET_REVENUE_2011 = 7_806_908.854
+
+# Independently computed via a separate pandas script (not this module's
+# SQL), per S09's required evaluation case.
+EXPECTED_TOP_PRODUCT_ID = "84077"
+EXPECTED_TOP_PRODUCT_UNITS_SOLD = 108_569
+
+_DEFAULT_DB_PATH = Path(os.environ.get("DUCKDB_PATH", str(DEFAULT_DB_PATH)))
 
 
 @pytest.fixture(scope="module")
@@ -128,3 +146,110 @@ def test_uk_net_revenue_2011_matches_independently_computed_value(con):
         """
     ).fetchone()
     assert revenue == pytest.approx(EXPECTED_UK_NET_REVENUE_2011, rel=1e-6)
+
+
+# --- v_order_lines (S09) ---
+
+
+def _table_exists(connection: duckdb.DuckDBPyConnection, table: str) -> bool:
+    (count,) = connection.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?", [table]
+    ).fetchone()
+    return count > 0
+
+
+@pytest.fixture(scope="module")
+def real_con():
+    if not _DEFAULT_DB_PATH.exists():
+        pytest.skip(
+            f"{_DEFAULT_DB_PATH} does not exist - run ingest, categorize, and "
+            "`views --build v_orders` first"
+        )
+    connection = duckdb.connect(str(_DEFAULT_DB_PATH))
+    for table in ("raw_online_retail", "dim_product_category", "v_orders"):
+        if not _table_exists(connection, table):
+            connection.close()
+            pytest.skip(f"{table} missing - build this slice's dependencies first")
+    build("v_order_lines", db_path=_DEFAULT_DB_PATH)  # free to rebuild
+    yield connection
+    connection.close()
+
+
+def test_v_order_lines(real_con):
+    # Every order_id in v_order_lines exists in v_orders.
+    (orphans,) = real_con.execute(
+        "SELECT COUNT(*) FROM v_order_lines WHERE order_id NOT IN (SELECT order_id FROM v_orders)"
+    ).fetchone()
+    assert orphans == 0
+
+    # is_return matches the negative-quantity/(corrected) InvoiceNo-prefix-C
+    # rule, checked exhaustively rather than on just a sample.
+    (mismatches,) = real_con.execute(
+        "SELECT COUNT(*) FROM v_order_lines "
+        "WHERE is_return != (order_id LIKE 'C%' AND quantity < 0)"
+    ).fetchone()
+    assert mismatches == 0
+
+    # SUM(line_revenue) for non-return rows reconciles with v_orders.gross_revenue per order.
+    (bad_orders,) = real_con.execute(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT l.order_id, SUM(l.line_revenue) AS line_sum, v.gross_revenue
+            FROM v_order_lines l
+            JOIN v_orders v ON v.order_id = l.order_id
+            WHERE NOT l.is_return
+            GROUP BY l.order_id, v.gross_revenue
+        ) t
+        WHERE ABS(t.line_sum - t.gross_revenue) > 0.01
+        """
+    ).fetchone()
+    assert bad_orders == 0
+
+
+def test_v_order_lines_schema_matches_information_model(real_con):
+    columns = {row[0] for row in real_con.execute("DESCRIBE v_order_lines").fetchall()}
+    assert columns == {
+        "line_id",
+        "order_id",
+        "product_id",
+        "category",
+        "quantity",
+        "unit_price",
+        "line_revenue",
+        "is_return",
+    }
+
+
+def test_v_order_lines_line_id_is_unique(real_con):
+    (total,) = real_con.execute("SELECT COUNT(*) FROM v_order_lines").fetchone()
+    (distinct,) = real_con.execute("SELECT COUNT(DISTINCT line_id) FROM v_order_lines").fetchone()
+    assert total == distinct
+
+
+def test_v_order_lines_category_is_never_null(real_con):
+    (null_count,) = real_con.execute(
+        "SELECT COUNT(*) FROM v_order_lines WHERE category IS NULL"
+    ).fetchone()
+    assert null_count == 0
+
+
+def test_v_order_lines_excludes_pure_cancellation_lines(real_con):
+    # Raw lines belonging to a cancellation invoice with no offsetting
+    # order (S08) must not appear here either - v_order_lines is scoped to
+    # raw lines whose InvoiceNo made it into v_orders.
+    (raw_count,) = real_con.execute("SELECT COUNT(*) FROM raw_online_retail").fetchone()
+    (kept_count,) = real_con.execute("SELECT COUNT(*) FROM v_order_lines").fetchone()
+    assert kept_count < raw_count
+
+
+def test_top_product_units_sold_matches_independently_computed_value(real_con):
+    row = real_con.execute(
+        """
+        SELECT product_id, SUM(quantity) AS units_sold
+        FROM v_order_lines
+        GROUP BY product_id
+        ORDER BY units_sold DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    assert row == (EXPECTED_TOP_PRODUCT_ID, EXPECTED_TOP_PRODUCT_UNITS_SOLD)

@@ -99,8 +99,54 @@ def build_v_orders(con: duckdb.DuckDBPyConnection) -> int:
     return row_count
 
 
+# v_order_lines is scoped to raw lines whose InvoiceNo made it into v_orders
+# (an inner join, not "every raw row unconditionally") - this is what makes
+# "every order_id in v_order_lines exists in v_orders" (S09's required
+# test) hold universally, including for kept cancellation invoices, not
+# just non-cancelled ones. The ~1,016 pure-cancellation invoices S08
+# excludes from v_orders are excluded here too, for the same reason: a
+# line item with no valid parent order has nothing consistent to report.
+#
+# is_return uses the same corrected InvoiceNo-prefix pattern as v_orders,
+# combined with the negative-quantity condition scope.md's rule states -
+# verified against real data that this compound condition matters: exactly
+# one cancellation-invoice row has non-negative quantity, so "is a
+# cancellation invoice" alone isn't equivalent to the doc's rule.
+V_ORDER_LINES_SQL = """
+WITH lines AS (
+    SELECT
+        r.InvoiceNo,
+        r.StockCode,
+        r.Quantity,
+        r.UnitPrice,
+        ROW_NUMBER() OVER (PARTITION BY r.InvoiceNo ORDER BY r.StockCode) AS line_num
+    FROM raw_online_retail r
+    WHERE r.InvoiceNo IN (SELECT order_id FROM v_orders)
+)
+SELECT
+    l.InvoiceNo || '-' || CAST(l.line_num AS VARCHAR) AS line_id,
+    l.InvoiceNo AS order_id,
+    l.StockCode AS product_id,
+    COALESCE(c.category, 'Other') AS category,
+    l.Quantity AS quantity,
+    l.UnitPrice AS unit_price,
+    l.Quantity * l.UnitPrice AS line_revenue,
+    (l.InvoiceNo LIKE 'C%' AND l.Quantity < 0) AS is_return
+FROM lines l
+LEFT JOIN dim_product_category c ON c.product_id = l.StockCode
+"""
+
+
+def build_v_order_lines(con: duckdb.DuckDBPyConnection) -> int:
+    con.execute("DROP TABLE IF EXISTS v_order_lines")
+    con.execute(f"CREATE TABLE v_order_lines AS {V_ORDER_LINES_SQL}")
+    (row_count,) = con.execute("SELECT COUNT(*) FROM v_order_lines").fetchone()
+    return row_count
+
+
 BUILDERS = {
     "v_orders": build_v_orders,
+    "v_order_lines": build_v_order_lines,
 }
 
 
