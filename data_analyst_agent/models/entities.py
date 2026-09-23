@@ -202,7 +202,18 @@ class MetricDefinition(BaseModel):
 class GoldQuestion(BaseModel):
     """One row of the hand-crafted gold set. `gold_sql`/`gold_result` are
     null exactly for the graceful-failure-designed adversarial subset
-    (`is_graceful_failure_case == True`), per S18's acceptance criteria."""
+    (`is_graceful_failure_case == True`), per S18's acceptance criteria.
+
+    `expected_failure_category` is a field beyond InformationModel.md's
+    original GoldQuestion schema - added at S18, a flagged gap: S18's own
+    acceptance criteria requires storing "the expected failure category
+    (schema_mismatch / ambiguity)" for graceful-failure rows, but no doc
+    ever gave GoldQuestion a field for it. Reuses `FailureCategory`, the
+    same enum `FailureDiagnosis.category` already uses - `"bug"` is a
+    valid `FailureCategory` value but never a sensible *expected* one
+    here, since these rows are deliberately designed to fail, not
+    accidentally broken.
+    """
 
     question_id: str
     question_text: str
@@ -210,6 +221,7 @@ class GoldQuestion(BaseModel):
     gold_sql: str | None = None
     gold_result: ResultData | None = None
     is_graceful_failure_case: bool
+    expected_failure_category: FailureCategory | None = None
 
     @model_validator(mode="after")
     def _check_graceful_failure_shape(self) -> GoldQuestion:
@@ -218,10 +230,18 @@ class GoldQuestion(BaseModel):
                 raise ValueError(
                     "is_graceful_failure_case == True requires gold_sql and gold_result to be null"
                 )
+            if self.expected_failure_category is None:
+                raise ValueError(
+                    "is_graceful_failure_case == True requires expected_failure_category"
+                )
         else:
             if self.gold_sql is None or self.gold_result is None:
                 raise ValueError(
                     "is_graceful_failure_case == False requires gold_sql and gold_result"
+                )
+            if self.expected_failure_category is not None:
+                raise ValueError(
+                    "is_graceful_failure_case == False must not carry expected_failure_category"
                 )
         return self
 

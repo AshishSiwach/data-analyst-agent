@@ -269,9 +269,33 @@ def test_gold_question_graceful_failure_allows_null_sql():
         question_text="Why did email opens drop?",
         bucket="adversarial",
         is_graceful_failure_case=True,
+        expected_failure_category="schema_mismatch",
     )
     assert gq.gold_sql is None
     assert gq.gold_result is None
+
+
+def test_gold_question_graceful_failure_requires_expected_failure_category():
+    with pytest.raises(ValidationError):
+        GoldQuestion(
+            question_id="q-2b",
+            question_text="Why did email opens drop?",
+            bucket="adversarial",
+            is_graceful_failure_case=True,
+        )
+
+
+def test_gold_question_non_graceful_failure_forbids_expected_failure_category():
+    with pytest.raises(ValidationError):
+        GoldQuestion(
+            question_id="q-3b",
+            question_text="What is total revenue?",
+            bucket="basic",
+            gold_sql="SELECT 1",
+            gold_result=ResultData(**_result_data()),
+            is_graceful_failure_case=False,
+            expected_failure_category="ambiguity",
+        )
 
 
 def test_gold_question_non_graceful_failure_requires_gold_sql():
