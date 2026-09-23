@@ -144,9 +144,59 @@ def build_v_order_lines(con: duckdb.DuckDBPyConnection) -> int:
     return row_count
 
 
+# order_count is COUNT(*) of v_orders rows for the customer - "distinct
+# invoices", per the metric dictionary, which includes a kept cancellation
+# invoice (it's still its own invoice number), not just "purchases".
+#
+# country isn't documented as needing a selection rule (InformationModel.md
+# just says `country: string`), and 13/5,881 customers have orders from
+# more than one country in the real data - picked the country of each
+# customer's most recent order, tie-broken alphabetically for determinism.
+V_CUSTOMERS_SQL = """
+WITH agg AS (
+    SELECT
+        customer_id,
+        MIN(order_date) AS first_order_date,
+        MAX(order_date) AS last_order_date,
+        COUNT(*) AS order_count,
+        SUM(net_revenue) AS lifetime_revenue
+    FROM v_orders
+    WHERE customer_id IS NOT NULL
+    GROUP BY customer_id
+),
+country_pick AS (
+    SELECT
+        customer_id,
+        country,
+        ROW_NUMBER() OVER (
+            PARTITION BY customer_id ORDER BY order_date DESC, country ASC
+        ) AS rn
+    FROM v_orders
+    WHERE customer_id IS NOT NULL
+)
+SELECT
+    a.customer_id,
+    c.country,
+    a.first_order_date,
+    a.last_order_date,
+    a.order_count,
+    a.lifetime_revenue
+FROM agg a
+JOIN country_pick c ON c.customer_id = a.customer_id AND c.rn = 1
+"""
+
+
+def build_v_customers(con: duckdb.DuckDBPyConnection) -> int:
+    con.execute("DROP TABLE IF EXISTS v_customers")
+    con.execute(f"CREATE TABLE v_customers AS {V_CUSTOMERS_SQL}")
+    (row_count,) = con.execute("SELECT COUNT(*) FROM v_customers").fetchone()
+    return row_count
+
+
 BUILDERS = {
     "v_orders": build_v_orders,
     "v_order_lines": build_v_order_lines,
+    "v_customers": build_v_customers,
 }
 
 

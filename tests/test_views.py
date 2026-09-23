@@ -158,18 +158,26 @@ def _table_exists(connection: duckdb.DuckDBPyConnection, table: str) -> bool:
     return count > 0
 
 
-@pytest.fixture(scope="module")
-def real_con():
+def _real_db_connection(required_tables: tuple[str, ...]):
+    """Connect to the already-built default DB, skipping with a clear
+    message if it or any required table is missing, rather than silently
+    rebuilding a costly (S07) dependency inside a test run."""
     if not _DEFAULT_DB_PATH.exists():
         pytest.skip(
             f"{_DEFAULT_DB_PATH} does not exist - run ingest, categorize, and "
             "`views --build v_orders` first"
         )
     connection = duckdb.connect(str(_DEFAULT_DB_PATH))
-    for table in ("raw_online_retail", "dim_product_category", "v_orders"):
+    for table in required_tables:
         if not _table_exists(connection, table):
             connection.close()
             pytest.skip(f"{table} missing - build this slice's dependencies first")
+    return connection
+
+
+@pytest.fixture(scope="module")
+def real_con():
+    connection = _real_db_connection(("raw_online_retail", "dim_product_category", "v_orders"))
     build("v_order_lines", db_path=_DEFAULT_DB_PATH)  # free to rebuild
     yield connection
     connection.close()
@@ -253,3 +261,109 @@ def test_top_product_units_sold_matches_independently_computed_value(real_con):
         """
     ).fetchone()
     assert row == (EXPECTED_TOP_PRODUCT_ID, EXPECTED_TOP_PRODUCT_UNITS_SOLD)
+
+
+# --- v_customers (S10) ---
+
+# v_customers only depends on v_orders (free to build), so - unlike
+# v_order_lines - there's no cost reason to isolate these tests in a fresh
+# tmp_path DB. Reusing the already-built default DB just avoids paying
+# another ~40s ingest() cycle for isolation that wouldn't buy much, since
+# v_orders' own correctness is already covered by its own tests.
+
+EXPECTED_CUSTOMER_ID = "17850"
+# Manually verified: SELECT COUNT(*) FROM v_orders WHERE customer_id = '17850'.
+EXPECTED_CUSTOMER_ORDER_COUNT = 159
+
+# Independently computed via a separate pandas script (not this module's
+# SQL), per S10's required evaluation case. Note this is a genuinely
+# period-scoped metric (orders *within* 2011), which v_customers' own
+# order_count column can't answer on its own since it's lifetime-scoped -
+# computed here by filtering v_orders to 2011 directly, then applying the
+# repeat_rate definition, per the metric dictionary.
+EXPECTED_REPEAT_RATE_2011 = 2914 / 4232
+
+
+@pytest.fixture(scope="module")
+def customers_con():
+    connection = _real_db_connection(("raw_online_retail", "v_orders"))
+    build("v_customers", db_path=_DEFAULT_DB_PATH)  # free to rebuild
+    yield connection
+    connection.close()
+
+
+def test_v_customers(customers_con):
+    # Row count equals distinct non-null customer_id count in v_orders.
+    (v_customers_count,) = customers_con.execute("SELECT COUNT(*) FROM v_customers").fetchone()
+    (distinct_customers,) = customers_con.execute(
+        "SELECT COUNT(DISTINCT customer_id) FROM v_orders WHERE customer_id IS NOT NULL"
+    ).fetchone()
+    assert v_customers_count == distinct_customers
+
+    # order_count for a specific known customer matches a manually-verified count.
+    (order_count,) = customers_con.execute(
+        "SELECT order_count FROM v_customers WHERE customer_id = ?", [EXPECTED_CUSTOMER_ID]
+    ).fetchone()
+    assert order_count == EXPECTED_CUSTOMER_ORDER_COUNT
+
+    # SUM(v_customers.lifetime_revenue) equals
+    # SUM(v_orders.net_revenue WHERE customer_id IS NOT NULL).
+    (lifetime_sum,) = customers_con.execute(
+        "SELECT SUM(lifetime_revenue) FROM v_customers"
+    ).fetchone()
+    (net_revenue_sum,) = customers_con.execute(
+        "SELECT SUM(net_revenue) FROM v_orders WHERE customer_id IS NOT NULL"
+    ).fetchone()
+    assert lifetime_sum == pytest.approx(net_revenue_sum, rel=1e-6)
+
+
+def test_v_customers_schema_matches_information_model(customers_con):
+    columns = {row[0] for row in customers_con.execute("DESCRIBE v_customers").fetchall()}
+    assert columns == {
+        "customer_id",
+        "country",
+        "first_order_date",
+        "last_order_date",
+        "order_count",
+        "lifetime_revenue",
+    }
+
+
+def test_v_customers_has_no_null_customer_id_row(customers_con):
+    (null_count,) = customers_con.execute(
+        "SELECT COUNT(*) FROM v_customers WHERE customer_id IS NULL"
+    ).fetchone()
+    assert null_count == 0
+
+
+def test_v_customers_first_and_last_order_date_bound_all_of_that_customers_orders(customers_con):
+    (violations,) = customers_con.execute(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT c.customer_id
+            FROM v_customers c
+            JOIN v_orders o ON o.customer_id = c.customer_id
+            WHERE o.order_date < c.first_order_date OR o.order_date > c.last_order_date
+        )
+        """
+    ).fetchone()
+    assert violations == 0
+
+
+def test_repeat_rate_2011_matches_independently_computed_value(customers_con):
+    (repeat_customers, total_customers) = customers_con.execute(
+        """
+        WITH per_customer_2011 AS (
+            SELECT customer_id, COUNT(*) AS order_count
+            FROM v_orders
+            WHERE customer_id IS NOT NULL AND EXTRACT(YEAR FROM order_date) = 2011
+            GROUP BY customer_id
+        )
+        SELECT
+            COUNT(*) FILTER (WHERE order_count >= 2),
+            COUNT(*)
+        FROM per_customer_2011
+        """
+    ).fetchone()
+    repeat_rate = repeat_customers / total_customers
+    assert repeat_rate == pytest.approx(EXPECTED_REPEAT_RATE_2011, rel=1e-9)
