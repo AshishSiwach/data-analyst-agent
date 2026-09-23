@@ -193,10 +193,86 @@ def build_v_customers(con: duckdb.DuckDBPyConnection) -> int:
     return row_count
 
 
+# total_units_sold and total_revenue exclude return lines entirely
+# (WHERE NOT is_return), rather than netting them in as a signed sum. This
+# is forced by S11's own required test - "SUM(v_products.total_revenue)
+# equals SUM(v_order_lines.line_revenue WHERE NOT is_return)" only holds
+# if return-line contributions are excluded, not netted, since a netted
+# sum would differ from a not-is_return-only sum by the (nonzero) total of
+# return line_revenue. This differs from the metric dictionary's general
+# "Revenue... net of returns" definition - flagged for gold-set authoring
+# in S16-S18: a hand-computed "net" answer for a single product's revenue
+# will disagree with v_products.total_revenue.
+#
+# One row per product_id present in v_order_lines (driven by v_order_lines,
+# enriched by dim_product_category), not one row per product_id in
+# dim_product_category. 3 of 5,305 products have zero rows in v_order_lines
+# at all - every one of their raw lines belonged to a pure-cancellation
+# invoice excluded in S08/S09 - so they have no v_products row either.
+V_PRODUCTS_SQL = """
+WITH lines_with_order AS (
+    SELECT
+        l.product_id,
+        l.quantity,
+        l.line_revenue,
+        l.is_return,
+        o.customer_id,
+        o.country
+    FROM v_order_lines l
+    JOIN v_orders o ON o.order_id = l.order_id
+),
+product_totals AS (
+    SELECT
+        product_id,
+        SUM(CASE WHEN NOT is_return THEN quantity ELSE 0 END) AS total_units_sold,
+        SUM(CASE WHEN NOT is_return THEN line_revenue ELSE 0 END) AS total_revenue,
+        COUNT(DISTINCT customer_id) AS distinct_customer_count
+    FROM lines_with_order
+    GROUP BY product_id
+),
+region_revenue AS (
+    SELECT
+        product_id,
+        country,
+        SUM(CASE WHEN NOT is_return THEN line_revenue ELSE 0 END) AS region_revenue
+    FROM lines_with_order
+    GROUP BY product_id, country
+),
+top_region_pick AS (
+    SELECT
+        product_id,
+        country,
+        ROW_NUMBER() OVER (
+            PARTITION BY product_id ORDER BY region_revenue DESC, country ASC
+        ) AS rn
+    FROM region_revenue
+)
+SELECT
+    t.product_id,
+    d.description,
+    d.category,
+    t.total_units_sold,
+    t.total_revenue,
+    t.distinct_customer_count,
+    r.country AS top_region
+FROM product_totals t
+JOIN dim_product_category d ON d.product_id = t.product_id
+JOIN top_region_pick r ON r.product_id = t.product_id AND r.rn = 1
+"""
+
+
+def build_v_products(con: duckdb.DuckDBPyConnection) -> int:
+    con.execute("DROP TABLE IF EXISTS v_products")
+    con.execute(f"CREATE TABLE v_products AS {V_PRODUCTS_SQL}")
+    (row_count,) = con.execute("SELECT COUNT(*) FROM v_products").fetchone()
+    return row_count
+
+
 BUILDERS = {
     "v_orders": build_v_orders,
     "v_order_lines": build_v_order_lines,
     "v_customers": build_v_customers,
+    "v_products": build_v_products,
 }
 
 

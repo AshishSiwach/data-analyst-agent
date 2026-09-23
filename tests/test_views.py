@@ -367,3 +367,90 @@ def test_repeat_rate_2011_matches_independently_computed_value(customers_con):
     ).fetchone()
     repeat_rate = repeat_customers / total_customers
     assert repeat_rate == pytest.approx(EXPECTED_REPEAT_RATE_2011, rel=1e-9)
+
+
+# --- v_products (S11) ---
+
+# v_products depends on v_order_lines, which depends on dim_product_category
+# (S07, real cost) - same real-DB pattern as v_order_lines' own tests.
+
+EXPECTED_TOP_REGION_PRODUCT_ID = "85123A"
+EXPECTED_TOP_REGION = "United Kingdom"  # manually verified against v_order_lines + v_orders.country
+
+
+@pytest.fixture(scope="module")
+def products_con():
+    connection = _real_db_connection(
+        ("raw_online_retail", "dim_product_category", "v_orders", "v_order_lines")
+    )
+    build("v_products", db_path=_DEFAULT_DB_PATH)  # free to rebuild
+    yield connection
+    connection.close()
+
+
+def test_v_products(products_con):
+    # SUM(v_products.total_revenue) equals SUM(v_order_lines.line_revenue WHERE NOT is_return).
+    (products_revenue,) = products_con.execute(
+        "SELECT SUM(total_revenue) FROM v_products"
+    ).fetchone()
+    (lines_revenue,) = products_con.execute(
+        "SELECT SUM(line_revenue) FROM v_order_lines WHERE NOT is_return"
+    ).fetchone()
+    assert products_revenue == pytest.approx(lines_revenue, rel=1e-6)
+
+    # top_region for a known high-volume product matches manual verification
+    # against v_order_lines joined to v_orders.country.
+    (top_region,) = products_con.execute(
+        "SELECT top_region FROM v_products WHERE product_id = ?",
+        [EXPECTED_TOP_REGION_PRODUCT_ID],
+    ).fetchone()
+    assert top_region == EXPECTED_TOP_REGION
+
+
+def test_v_products_schema_matches_information_model(products_con):
+    columns = {row[0] for row in products_con.execute("DESCRIBE v_products").fetchall()}
+    assert columns == {
+        "product_id",
+        "description",
+        "category",
+        "total_units_sold",
+        "total_revenue",
+        "distinct_customer_count",
+        "top_region",
+    }
+
+
+def test_v_products_no_nulls_in_required_fields(products_con):
+    (bad_rows,) = products_con.execute(
+        """
+        SELECT COUNT(*) FROM v_products
+        WHERE description IS NULL OR category IS NULL OR top_region IS NULL
+        """
+    ).fetchone()
+    assert bad_rows == 0
+
+
+def test_v_products_one_row_per_product_id_present_in_order_lines(products_con):
+    (products_count,) = products_con.execute("SELECT COUNT(*) FROM v_products").fetchone()
+    (distinct_product_ids,) = products_con.execute(
+        "SELECT COUNT(DISTINCT product_id) FROM v_order_lines"
+    ).fetchone()
+    assert products_count == distinct_product_ids
+
+
+def test_v_products_distinct_customer_count_matches_manual_count(products_con):
+    # Cross-check distinct_customer_count for the same known product against
+    # an independent query over v_order_lines joined to v_orders.
+    (view_count,) = products_con.execute(
+        "SELECT distinct_customer_count FROM v_products WHERE product_id = ?",
+        [EXPECTED_TOP_REGION_PRODUCT_ID],
+    ).fetchone()
+    (manual_count,) = products_con.execute(
+        """
+        SELECT COUNT(DISTINCT o.customer_id)
+        FROM v_order_lines l JOIN v_orders o ON o.order_id = l.order_id
+        WHERE l.product_id = ?
+        """,
+        [EXPECTED_TOP_REGION_PRODUCT_ID],
+    ).fetchone()
+    assert view_count == manual_count
