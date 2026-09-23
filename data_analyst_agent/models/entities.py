@@ -136,6 +136,18 @@ class FailureDiagnosis(BaseModel):
     rephrase_suggestion: str
 
 
+class NarrativeWrap(BaseModel):
+    """`agent/narrative.py::wrap`'s (S22) output, matching Tools.md's
+    Narrative wrap output schema exactly: `answer_text` and
+    `assumption_disclosed` (null when the question wasn't ambiguous). This
+    is deliberately smaller than `Answer` (S01) - the orchestrator (S24)
+    combines this with turn_id/chart_spec/sql_shown, which `wrap` itself
+    has no business setting."""
+
+    answer_text: str
+    assumption_disclosed: str | None = None
+
+
 class Answer(BaseModel):
     """The object the Streamlit layer renders directly.
 
