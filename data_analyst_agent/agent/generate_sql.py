@@ -66,7 +66,7 @@ class GeneratedSql(BaseModel):
     sql: str
 
 
-def _build_schema_summary(db_path: Path | str | None = None) -> str:
+def build_schema_summary(db_path: Path | str | None = None) -> str:
     con = get_connection(db_path)
     try:
         lines = []
@@ -90,7 +90,7 @@ def _build_metric_dictionary_summary() -> str:
 
 def _build_system_prompt(db_path: Path | str | None = None) -> str:
     return SYSTEM_PROMPT_TEMPLATE.format(
-        schema_summary=_build_schema_summary(db_path),
+        schema_summary=build_schema_summary(db_path),
         metric_dictionary=_build_metric_dictionary_summary(),
     )
 
