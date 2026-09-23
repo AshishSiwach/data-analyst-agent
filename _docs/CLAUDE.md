@@ -51,7 +51,7 @@ Every module above has exactly one design doc that defines its contract (named i
 ## Environment & setup
 
 - Python 3.11+ (pinned exactly once `Dockerfile` exists at slice S28; target 3.11 locally until then — this is an operational default, not a decision restated from the docs above).
-- `pip install -r requirements.txt` (or `pyproject.toml`, whichever S01 establishes — pick one and don't maintain both).
+- `pyproject.toml` is the single dependency/tool-config file (S01's "pick one and don't maintain both" call). Managed with `uv`: `uv venv --python 3.11 .venv && uv pip install -e ".[dev]"`. `uv.lock` is committed for reproducible installs; regenerate with `uv lock` after any dependency change. Run project commands via `uv run <cmd>` (e.g. `uv run pytest`, `uv run ruff check .`) so they execute inside `.venv` without manual activation.
 - Required environment variables, read from `.env` (never committed — see `.gitignore`):
   - `OPENAI_API_KEY` — GPT-4o-mini per `technology_stack.md` §1.
   - `DUCKDB_PATH` — path to the database file built by `data/ingest.py`.
@@ -95,15 +95,17 @@ Each of these was evaluated and rejected in `technology_stack.md` or `Architectu
 
 - **All data crossing a module boundary is a `pydantic` model from `models/entities.py`.** No ad-hoc dicts passed between `agent/*` modules — if a new field is needed, add it to the model, don't bag it onto an untyped kwarg.
 - **Logging is stdlib `json`, one line per record, append mode only.** No `structlog`/`loguru` — matches `technology_stack.md` §8's reasoning; introducing one is a regression, not an upgrade.
-- **Lint/format: `ruff`.** `ruff check . && ruff format --check .` must exit 0 before a slice is considered complete. No `mypy` requirement — `pydantic` already gives runtime validation at every module boundary, and static typing wasn't asked for; don't add the tooling overhead unless a real bug demonstrates the need.
+- **Lint/format: `ruff`.** `uv run ruff check . && uv run ruff format --check .` must exit 0 before a slice is considered complete. No `mypy` requirement — `pydantic` already gives runtime validation at every module boundary, and static typing wasn't asked for; don't add the tooling overhead unless a real bug demonstrates the need.
 - **Every module gets its tests in `tests/test_<module>.py`, run with `pytest`.** A slice's tests live alongside the module they test, not batched into one giant test file.
 
 ## Verification
 
-- Unit/integration tests: `pytest -q` (or the specific file named in the slice's verification command in `implementation_plan.md`).
-- Lint/format: `ruff check . && ruff format --check .`
-- Eval harness (once S25 exists): `python -m data_analyst_agent.eval.harness --gold eval/gold --out report/`
-- Local run (once S27 exists): `streamlit run app/streamlit_app.py`
+Slice-level verification commands in `implementation_plan.md` are written as plain `pytest`/`python -m ...` for brevity — run them through `uv run` (e.g. `uv run pytest tests/test_entities.py -v`) so they execute inside `.venv`.
+
+- Unit/integration tests: `uv run pytest -q` (or the specific file named in the slice's verification command in `implementation_plan.md`).
+- Lint/format: `uv run ruff check . && uv run ruff format --check .`
+- Eval harness (once S25 exists): `uv run python -m data_analyst_agent.eval.harness --gold eval/gold --out report/`
+- Local run (once S27 exists): `uv run streamlit run app/streamlit_app.py`
 - Docker (once S28 exists): `docker build -t data-analyst-agent . && docker run -p 8501:8501 data-analyst-agent`
 
 A slice is not done because the code looks right — it's done when its own verification command, as stated in `implementation_plan.md`, actually exits 0.

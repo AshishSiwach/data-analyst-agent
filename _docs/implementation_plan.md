@@ -370,7 +370,7 @@ data_analyst_agent/
 
 - **Goal.** A single `Dockerfile` that reproduces the whole environment — app, agent, and eval harness — per `technology_stack.md`.
 - **Dependencies.** S27, S25.
-- **Files/modules.** `Dockerfile`, `requirements.txt` (or `pyproject.toml`).
+- **Files/modules.** `Dockerfile`, using the existing `pyproject.toml` + `uv.lock` (installed in the image via `uv sync --frozen` or equivalent — no separate `requirements.txt`, per S01's dependency-file decision).
 - **Acceptance criteria.** `docker build -t data-analyst-agent .` succeeds. `docker run -p 8501:8501 data-analyst-agent` serves the same working Streamlit app as S27. Running the eval harness inside the container (`docker run data-analyst-agent python -m data_analyst_agent.eval.harness ...`) reproduces the same report S25 produces locally.
 - **Required tests.** None beyond the two commands above — this slice's own acceptance criteria are its test.
 - **Required evaluation cases.** The eval harness run *inside the container* must match the locally-run report from S26 on the accuracy numbers (proving environment parity, not just "it starts").
