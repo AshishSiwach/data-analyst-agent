@@ -87,6 +87,42 @@ class SqlExecutionResult(BaseModel):
         return self
 
 
+class SqlRetryOutcome(BaseModel):
+    """What `agent/retry_loop.py::run_turn_sql` (S20) returns. Added beyond
+    S01's original models - a flagged gap: S20's acceptance criteria says
+    `-> SqlAttempt`, but `SqlAttempt` is audit-log-shaped (no rows/columns,
+    per the same S15 gap) and has no way to represent a `fast_fail` or
+    `budget_stop` outcome (`SqlExecutionResult.status` is the run_sql-only
+    enum `success | error | timeout | rejected`). This type carries the
+    three things the retry loop's caller (S24's orchestrator) actually
+    needs: which of four ways the loop ended, the winning-or-final
+    `SqlExecutionResult` (absent for `fast_fail`, which makes zero
+    attempts, and for `budget_stop`, which discards its final attempt),
+    and the full turn-scoped attempt trace for S05's audit logging and
+    S23's diagnosis - both done by the orchestrator, not the retry loop.
+    """
+
+    status: Literal["success", "exhausted", "fast_fail", "budget_stop"]
+    result: SqlExecutionResult | None = None
+    attempts: list[SqlAttempt] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> SqlRetryOutcome:
+        if len(self.attempts) > 3:
+            raise ValueError("attempts must never exceed 3")
+        if self.status == "fast_fail" and (self.attempts or self.result is not None):
+            raise ValueError("status == 'fast_fail' must have zero attempts and no result")
+        if self.status == "success" and (self.result is None or self.result.status != "success"):
+            raise ValueError("status == 'success' requires a successful result")
+        if self.status == "exhausted" and (
+            len(self.attempts) != 3 or self.result is None or self.result.status == "success"
+        ):
+            raise ValueError(
+                "status == 'exhausted' requires exactly 3 attempts and a non-success result"
+            )
+        return self
+
+
 class ChartSpec(BaseModel):
     chart_type: ChartType
     data: list[list[Any]]
