@@ -454,3 +454,69 @@ def test_v_products_distinct_customer_count_matches_manual_count(products_con):
         [EXPECTED_TOP_REGION_PRODUCT_ID],
     ).fetchone()
     assert view_count == manual_count
+
+
+# --- v_daily_revenue (S12) ---
+
+# v_daily_revenue only depends on v_orders (free to build), same reasoning
+# as v_customers (S10): reuse the already-built default DB rather than
+# paying another ~40s ingest() cycle for isolation v_orders' own tests
+# already cover.
+
+# Independently computed via a separate pandas script (not this module's
+# SQL) replicating the same cleaning rules by hand, per S12's required
+# evaluation case. "Revenue" here means net_revenue, per the metric
+# dictionary's general (non-v_products-special-cased) definition.
+EXPECTED_TOP_REVENUE_DATE = "2010-12-07"
+EXPECTED_TOP_REVENUE_DATE_NET_REVENUE = 198_459.76
+
+
+@pytest.fixture(scope="module")
+def daily_revenue_con():
+    connection = _real_db_connection(("raw_online_retail", "v_orders"))
+    build("v_daily_revenue", db_path=_DEFAULT_DB_PATH)  # free to rebuild
+    yield connection
+    connection.close()
+
+
+def test_v_daily_revenue(daily_revenue_con):
+    # SUM(v_daily_revenue.net_revenue) equals SUM(v_orders.net_revenue) exactly.
+    (rollup_sum,) = daily_revenue_con.execute(
+        "SELECT SUM(net_revenue) FROM v_daily_revenue"
+    ).fetchone()
+    (orders_sum,) = daily_revenue_con.execute("SELECT SUM(net_revenue) FROM v_orders").fetchone()
+    assert rollup_sum == pytest.approx(orders_sum, rel=1e-9)
+
+
+def test_v_daily_revenue_schema_matches_information_model(daily_revenue_con):
+    columns = {row[0] for row in daily_revenue_con.execute("DESCRIBE v_daily_revenue").fetchall()}
+    assert columns == {"date", "gross_revenue", "net_revenue", "order_count", "unique_customers"}
+
+
+def test_v_daily_revenue_one_row_per_calendar_date_in_v_orders(daily_revenue_con):
+    (rollup_count,) = daily_revenue_con.execute("SELECT COUNT(*) FROM v_daily_revenue").fetchone()
+    (distinct_dates,) = daily_revenue_con.execute(
+        "SELECT COUNT(DISTINCT order_date) FROM v_orders"
+    ).fetchone()
+    assert rollup_count == distinct_dates
+
+
+def test_v_daily_revenue_order_count_matches_manual_count_for_a_known_date(daily_revenue_con):
+    (view_count,) = daily_revenue_con.execute(
+        "SELECT order_count FROM v_daily_revenue WHERE date = ?",
+        [EXPECTED_TOP_REVENUE_DATE],
+    ).fetchone()
+    (manual_count,) = daily_revenue_con.execute(
+        "SELECT COUNT(*) FROM v_orders WHERE order_date = ?",
+        [EXPECTED_TOP_REVENUE_DATE],
+    ).fetchone()
+    assert view_count == manual_count
+
+
+def test_top_revenue_day_matches_independently_computed_value(daily_revenue_con):
+    row = daily_revenue_con.execute(
+        "SELECT date, net_revenue FROM v_daily_revenue ORDER BY net_revenue DESC LIMIT 1"
+    ).fetchone()
+    top_date, top_net_revenue = row
+    assert str(top_date) == EXPECTED_TOP_REVENUE_DATE
+    assert top_net_revenue == pytest.approx(EXPECTED_TOP_REVENUE_DATE_NET_REVENUE, rel=1e-6)

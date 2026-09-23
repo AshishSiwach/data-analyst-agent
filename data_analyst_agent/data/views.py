@@ -268,11 +268,37 @@ def build_v_products(con: duckdb.DuckDBPyConnection) -> int:
     return row_count
 
 
+# Date-grain rollup of v_orders - a straight GROUP BY order_date, deliberately
+# left off the InformationModel.md ER diagram since it's a rollup, not an
+# independently related entity. order_count is COUNT(*) of v_orders rows
+# for that date (same "distinct invoices" convention as v_customers.order_count,
+# includes a kept cancellation invoice); unique_customers is
+# COUNT(DISTINCT customer_id), which naturally excludes null-customer orders.
+V_DAILY_REVENUE_SQL = """
+SELECT
+    order_date AS date,
+    SUM(gross_revenue) AS gross_revenue,
+    SUM(net_revenue) AS net_revenue,
+    COUNT(*) AS order_count,
+    COUNT(DISTINCT customer_id) AS unique_customers
+FROM v_orders
+GROUP BY order_date
+"""
+
+
+def build_v_daily_revenue(con: duckdb.DuckDBPyConnection) -> int:
+    con.execute("DROP TABLE IF EXISTS v_daily_revenue")
+    con.execute(f"CREATE TABLE v_daily_revenue AS {V_DAILY_REVENUE_SQL}")
+    (row_count,) = con.execute("SELECT COUNT(*) FROM v_daily_revenue").fetchone()
+    return row_count
+
+
 BUILDERS = {
     "v_orders": build_v_orders,
     "v_order_lines": build_v_order_lines,
     "v_customers": build_v_customers,
     "v_products": build_v_products,
+    "v_daily_revenue": build_v_daily_revenue,
 }
 
 
