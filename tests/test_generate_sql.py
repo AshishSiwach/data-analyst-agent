@@ -58,29 +58,42 @@ class _FakeCompletion:
 
 
 class _FakeCompletionsAPI:
-    def __init__(self, fixed_sql: str):
-        self.fixed_sql = fixed_sql
+    def __init__(self, parsed: GeneratedSql):
+        self.parsed = parsed
         self.captured_kwargs: dict | None = None
 
     def parse(self, **kwargs):
         self.captured_kwargs = kwargs
-        return _FakeCompletion(GeneratedSql(sql=self.fixed_sql))
+        return _FakeCompletion(self.parsed)
 
 
 class _FakeChatAPI:
-    def __init__(self, fixed_sql: str):
-        self.completions = _FakeCompletionsAPI(fixed_sql)
+    def __init__(self, parsed: GeneratedSql):
+        self.completions = _FakeCompletionsAPI(parsed)
 
 
 class _FakeClient:
-    def __init__(self, fixed_sql: str = "SELECT 1"):
-        self.chat = _FakeChatAPI(fixed_sql)
+    def __init__(self, fixed_sql: str = "SELECT 1", parsed: GeneratedSql | None = None):
+        self.chat = _FakeChatAPI(parsed or GeneratedSql(can_answer_from_schema=True, sql=fixed_sql))
 
 
 def test_generate_sql_extracts_and_returns_the_sql_string():
     fake_client = _FakeClient(fixed_sql="SELECT COUNT(*) FROM v_orders")
     result = generate_sql("How many orders are there?", prior_error=None, client=fake_client)
-    assert result == "SELECT COUNT(*) FROM v_orders"
+    assert result.can_answer_from_schema is True
+    assert result.sql == "SELECT COUNT(*) FROM v_orders"
+
+
+def test_generate_sql_returns_a_declined_result_as_is():
+    declined = GeneratedSql(
+        can_answer_from_schema=False,
+        reason="Email open rate isn't tracked anywhere in this dataset.",
+    )
+    fake_client = _FakeClient(parsed=declined)
+    result = generate_sql("What's our email open rate?", prior_error=None, client=fake_client)
+    assert result.can_answer_from_schema is False
+    assert result.sql is None
+    assert result.reason == declined.reason
 
 
 def test_prompt_includes_full_metric_dictionary():

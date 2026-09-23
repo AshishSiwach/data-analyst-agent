@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 from data_analyst_agent.agent.retry_loop import MAX_ATTEMPTS, run_turn_sql
 from data_analyst_agent.agent.session import SessionState, normalize
-from data_analyst_agent.models.entities import SqlExecutionResult
+from data_analyst_agent.models.entities import GeneratedSql, SqlExecutionResult
 
 NOW = datetime(2026, 9, 23, 12, 0, 0, tzinfo=timezone.utc)
+
+_GENERATED = GeneratedSql(can_answer_from_schema=True, sql="SELECT 1")
 
 
 def _session(**overrides) -> SessionState:
@@ -39,7 +41,7 @@ def _success_result() -> SqlExecutionResult:
 @patch("data_analyst_agent.agent.retry_loop.run_sql")
 @patch("data_analyst_agent.agent.retry_loop.generate_sql")
 def test_fails_twice_then_succeeds_on_attempt_three(mock_gen, mock_run):
-    mock_gen.return_value = "SELECT 1"
+    mock_gen.return_value = _GENERATED
     mock_run.side_effect = [_error_result("e1"), _error_result("e2"), _success_result()]
 
     session = _session()
@@ -55,7 +57,7 @@ def test_fails_twice_then_succeeds_on_attempt_three(mock_gen, mock_run):
 @patch("data_analyst_agent.agent.retry_loop.run_sql")
 @patch("data_analyst_agent.agent.retry_loop.generate_sql")
 def test_fails_all_three_times_returns_exhausted_never_a_fourth_call(mock_gen, mock_run):
-    mock_gen.return_value = "SELECT 1"
+    mock_gen.return_value = _GENERATED
     mock_run.side_effect = [_error_result("e1"), _error_result("e2"), _error_result("e3")]
 
     session = _session()
@@ -70,7 +72,7 @@ def test_fails_all_three_times_returns_exhausted_never_a_fourth_call(mock_gen, m
 @patch("data_analyst_agent.agent.retry_loop.run_sql")
 @patch("data_analyst_agent.agent.retry_loop.generate_sql")
 def test_exhaustion_updates_failed_questions_cache_for_future_fast_fail(mock_gen, mock_run):
-    mock_gen.return_value = "SELECT 1"
+    mock_gen.return_value = _GENERATED
     mock_run.side_effect = [_error_result("e1"), _error_result("e2"), _error_result("e3")]
 
     session = _session()
@@ -106,7 +108,7 @@ def test_cost_cap_exceeded_after_attempt_one_halts_before_attempt_two(mock_gen, 
             session.cost_spent_usd = Decimal("0.10")
         else:
             session.cost_spent_usd = Decimal("0.60")
-        return "SELECT 1"
+        return _GENERATED
 
     mock_gen.side_effect = generate_side_effect
     mock_run.side_effect = [_error_result("e1")]
@@ -122,7 +124,7 @@ def test_cost_cap_exceeded_after_attempt_one_halts_before_attempt_two(mock_gen, 
 @patch("data_analyst_agent.agent.retry_loop.run_sql")
 @patch("data_analyst_agent.agent.retry_loop.generate_sql")
 def test_prior_error_is_threaded_into_the_next_generate_sql_call(mock_gen, mock_run):
-    mock_gen.return_value = "SELECT 1"
+    mock_gen.return_value = _GENERATED
     mock_run.side_effect = [_error_result("boom"), _success_result()]
 
     session = _session()
@@ -137,13 +139,51 @@ def test_prior_error_is_threaded_into_the_next_generate_sql_call(mock_gen, mock_
 @patch("data_analyst_agent.agent.retry_loop.run_sql")
 @patch("data_analyst_agent.agent.retry_loop.generate_sql")
 def test_turn_id_is_consistent_across_all_attempts(mock_gen, mock_run):
-    mock_gen.return_value = "SELECT 1"
+    mock_gen.return_value = _GENERATED
     mock_run.side_effect = [_error_result("e1"), _error_result("e2"), _error_result("e3")]
 
     session = _session()
     outcome = run_turn_sql("How many orders?", session, turn_id="turn-abc")
 
     assert all(a.turn_id == "turn-abc" for a in outcome.attempts)
+
+
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_declined_short_circuits_without_calling_run_sql(mock_gen, mock_run):
+    # generate_sql itself judges the question unanswerable from the schema
+    # (added retroactively after S23's evaluation showed the model would
+    # rather invent a plausible-but-wrong query than refuse).
+    mock_gen.return_value = GeneratedSql(
+        can_answer_from_schema=False,
+        reason="Email open rate isn't tracked anywhere in this dataset.",
+    )
+
+    session = _session()
+    outcome = run_turn_sql("What's our email open rate?", session)
+
+    assert outcome.status == "declined"
+    assert outcome.result is None
+    assert len(outcome.attempts) == 1
+    assert outcome.attempts[0].status == "rejected"
+    assert (
+        outcome.attempts[0].error_message
+        == "Email open rate isn't tracked anywhere in this dataset."
+    )
+    mock_run.assert_not_called()
+    mock_gen.assert_called_once()
+
+
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_declined_updates_failed_questions_cache_for_future_fast_fail(mock_gen, mock_run):
+    mock_gen.return_value = GeneratedSql(can_answer_from_schema=False, reason="no such data")
+
+    session = _session()
+    run_turn_sql("What's our email open rate?", session)
+
+    assert session.failed_questions_cache[normalize("What's our email open rate?")] >= 1
+    mock_run.assert_not_called()
 
 
 def test_max_attempts_constant_is_three():

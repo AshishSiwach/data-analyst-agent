@@ -15,6 +15,15 @@ to represent `fast_fail`/`budget_stop` as distinct outcomes from an
 ordinary SQL failure. Same resolution pattern as S15's `SqlAttempt` ->
 `SqlExecutionResult` gap.
 
+`declined` (added retroactively, post-S23): if `generate_sql` itself
+judges a question unanswerable from the schema (`can_answer_from_schema
+== False`), the loop stops immediately rather than burning the remaining
+attempts hoping the model reconsiders - same "stop retrying blind"
+reasoning as fast-fail. This was added after S23's required evaluation
+case showed the model would rather invent a plausible-but-wrong query
+(e.g. `WHERE country = 'Scotland'` returning 0 rows, reported as a normal
+success) than recognize a genuine schema gap.
+
 Not this module's job (left to S24's orchestrator, which is the layer
 that sees every LLM-invoking call in a turn, not just this one):
 - Incrementing `session.cost_spent_usd` from actual API usage - S19's
@@ -45,6 +54,12 @@ from data_analyst_agent.models.entities import (
 MAX_ATTEMPTS = 3
 
 
+def _record_failure_for_fast_fail(session: SessionState, question: str, attempt_count: int) -> None:
+    normalized = normalize(question)
+    prior_failures = session.failed_questions_cache.get(normalized, 0)
+    session.failed_questions_cache[normalized] = prior_failures + attempt_count
+
+
 def run_turn_sql(
     question: str,
     session: SessionState,
@@ -54,8 +69,9 @@ def run_turn_sql(
 ) -> SqlRetryOutcome:
     """Runs the bounded SQL-generation-and-execution loop for one turn.
     Mutates `session.failed_questions_cache` in place when a turn
-    exhausts its budget, so a later identical question fast-fails - this
-    is the only writer of that cache field anywhere in the system.
+    exhausts its budget or is declined, so a later identical question
+    fast-fails - this is the only writer of that cache field anywhere in
+    the system.
     """
     resolved_turn_id = turn_id if turn_id is not None else str(uuid.uuid4())
 
@@ -67,17 +83,33 @@ def run_turn_sql(
     result: SqlExecutionResult | None = None
 
     for attempt_number in range(1, MAX_ATTEMPTS + 1):
-        sql = generate_sql(question, prior_error=prior_error, db_path=db_path, client=client)
+        generated = generate_sql(question, prior_error=prior_error, db_path=db_path, client=client)
 
         if check_cost_cap(session):
             return SqlRetryOutcome(status="budget_stop", attempts=attempts)
 
-        result = run_sql(sql, attempt_number=attempt_number, db_path=db_path)
+        if not generated.can_answer_from_schema:
+            attempts.append(
+                SqlAttempt(
+                    turn_id=resolved_turn_id,
+                    attempt_number=attempt_number,
+                    query_text="",
+                    status="rejected",
+                    error_message=generated.reason,
+                    execution_ms=0,
+                    row_count=None,
+                    truncated=False,
+                )
+            )
+            _record_failure_for_fast_fail(session, question, len(attempts))
+            return SqlRetryOutcome(status="declined", attempts=attempts)
+
+        result = run_sql(generated.sql, attempt_number=attempt_number, db_path=db_path)
         attempts.append(
             SqlAttempt(
                 turn_id=resolved_turn_id,
                 attempt_number=attempt_number,
-                query_text=sql,
+                query_text=generated.sql,
                 status=result.status,
                 error_message=result.error_message,
                 execution_ms=result.execution_ms,
@@ -91,7 +123,5 @@ def run_turn_sql(
 
         prior_error = result.error_message
 
-    normalized = normalize(question)
-    prior_failures = session.failed_questions_cache.get(normalized, 0)
-    session.failed_questions_cache[normalized] = prior_failures + len(attempts)
+    _record_failure_for_fast_fail(session, question, len(attempts))
     return SqlRetryOutcome(status="exhausted", result=result, attempts=attempts)

@@ -37,6 +37,43 @@ class ResultData(BaseModel):
     rows: list[list[Any]]
 
 
+class GeneratedSql(BaseModel):
+    """`agent/generate_sql.py::generate_sql`'s (S19) output. Promoted here
+    from a module-local model once it started crossing a module boundary
+    (S20's retry loop needs to read `can_answer_from_schema`), per
+    CLAUDE.md's "all data crossing a module boundary is a pydantic model
+    from models/entities.py" rule.
+
+    `can_answer_from_schema` is a structural signal added retroactively
+    (post-S23) after the required S23 evaluation case showed the model
+    would rather invent *some* query than say "I can't do this" - e.g.
+    "How many orders came from Scotland?" silently became
+    `WHERE country = 'Scotland'` (0 rows, reported as a normal success)
+    instead of recognizing sub-national regions aren't tracked. Making
+    this an explicit boolean field means the retry loop can act on the
+    model's own judgment deterministically, instead of only inferring
+    unanswerability from whether the resulting SQL happens to error out -
+    which it usually doesn't, since a plausible-looking query is easy to
+    construct even for questions the schema can't actually answer.
+    """
+
+    can_answer_from_schema: bool
+    sql: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> GeneratedSql:
+        if self.can_answer_from_schema:
+            if self.sql is None:
+                raise ValueError("can_answer_from_schema == True requires sql")
+        else:
+            if self.sql is not None:
+                raise ValueError("can_answer_from_schema == False must not carry sql")
+            if self.reason is None:
+                raise ValueError("can_answer_from_schema == False requires reason")
+        return self
+
+
 class SqlAttempt(BaseModel):
     """Turn-scoped. Matches run_sql's I/O contract from Tools.md, combined
     into one record."""
@@ -95,14 +132,21 @@ class SqlRetryOutcome(BaseModel):
     `budget_stop` outcome (`SqlExecutionResult.status` is the run_sql-only
     enum `success | error | timeout | rejected`). This type carries the
     three things the retry loop's caller (S24's orchestrator) actually
-    needs: which of four ways the loop ended, the winning-or-final
+    needs: which of five ways the loop ended, the winning-or-final
     `SqlExecutionResult` (absent for `fast_fail`, which makes zero
-    attempts, and for `budget_stop`, which discards its final attempt),
-    and the full turn-scoped attempt trace for S05's audit logging and
-    S23's diagnosis - both done by the orchestrator, not the retry loop.
+    attempts, `budget_stop`, which discards its final attempt, and
+    `declined`, which never executes any SQL), and the full turn-scoped
+    attempt trace for S05's audit logging and S23's diagnosis - both done
+    by the orchestrator, not the retry loop.
+
+    `declined` (added post-S23, alongside `GeneratedSql.can_answer_from_schema`):
+    `generate_sql` itself judged the question unanswerable from the
+    schema. Short-circuits immediately rather than burning the remaining
+    attempts hoping the model reconsiders - the same "stop retrying
+    blind" reasoning `autonomy.md` already applies to fast-fail.
     """
 
-    status: Literal["success", "exhausted", "fast_fail", "budget_stop"]
+    status: Literal["success", "exhausted", "fast_fail", "budget_stop", "declined"]
     result: SqlExecutionResult | None = None
     attempts: list[SqlAttempt] = Field(default_factory=list)
 
@@ -120,6 +164,8 @@ class SqlRetryOutcome(BaseModel):
             raise ValueError(
                 "status == 'exhausted' requires exactly 3 attempts and a non-success result"
             )
+        if self.status == "declined" and (not self.attempts or self.result is not None):
+            raise ValueError("status == 'declined' requires at least one attempt and no result")
         return self
 
 
