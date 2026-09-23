@@ -51,6 +51,42 @@ class SqlAttempt(BaseModel):
     truncated: bool
 
 
+class SqlExecutionResult(BaseModel):
+    """The exact output shape `run_sql` (S15) returns, per `_docs/Tools.md`'s
+    typed output schema. Added at S15, beyond S01's original 11 models - a
+    flagged gap from S01's completion report: Tools.md's run_sql output
+    schema (status, columns, rows, row_count, truncated, error_message,
+    execution_ms) carries more than `SqlAttempt` does (`SqlAttempt` is
+    audit-log-shaped and has no `columns`/`rows`). `columns`, `rows`, and
+    `row_count` are present only when `status == "success"`;
+    `error_message` only when `status != "success"`.
+    """
+
+    status: SqlStatus
+    columns: list[ColumnSpec] | None = None
+    rows: list[list[Any]] | None = None
+    row_count: int | None = None
+    truncated: bool
+    error_message: str | None = None
+    execution_ms: int
+
+    @model_validator(mode="after")
+    def _check_status_shape(self) -> SqlExecutionResult:
+        if self.status == "success":
+            if self.columns is None or self.rows is None or self.row_count is None:
+                raise ValueError("status == 'success' requires columns, rows, and row_count")
+            if self.error_message is not None:
+                raise ValueError("status == 'success' must not carry an error_message")
+        else:
+            if self.columns is not None or self.rows is not None or self.row_count is not None:
+                raise ValueError(
+                    f"status == {self.status!r} must not carry columns, rows, or row_count"
+                )
+            if self.error_message is None:
+                raise ValueError(f"status == {self.status!r} requires error_message")
+        return self
+
+
 class ChartSpec(BaseModel):
     chart_type: ChartType
     data: list[list[Any]]
