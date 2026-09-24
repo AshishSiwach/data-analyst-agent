@@ -122,6 +122,11 @@ def _numeric_candidates(result: SqlExecutionResult, question: str) -> set[float]
                 v = float(value)
                 candidates.add(v)
                 candidates.add(v * 100)  # fraction -> percentage display
+                # A negative metric (e.g. revenue=-147614.08) is often
+                # faithfully phrased as "a loss of $147,614.08" - the sign
+                # is conveyed in words, not digits, so the magnitude alone
+                # must be groundable too.
+                candidates.add(abs(v))
             elif isinstance(value, date):  # datetime is a date subclass too
                 # A truthful phrase like "December 5th" or "in 2011" draws
                 # on a date value's own day/month/year, not a fabricated
@@ -135,6 +140,12 @@ def _numeric_candidates(result: SqlExecutionResult, question: str) -> set[float]
                 if date_match:
                     year, month, day = date_match.groups()
                     candidates.update({float(year), float(month), float(day)})
+                # A VARCHAR identifier column (product_id/stock code, e.g.
+                # "22423" or "85123A") can be all-digits or digits-plus-
+                # letters - a truthful "product ID 22423" is quoting this
+                # cell verbatim, not fabricating a number, so any numeric
+                # substring of a string cell is groundable too.
+                candidates.update(_extract_numbers(value))
     candidates.update(_extract_numbers(question))
     return candidates
 

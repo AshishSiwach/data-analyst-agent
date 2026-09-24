@@ -155,6 +155,54 @@ def test_wrap_allows_a_day_number_drawn_from_a_date_column():
     assert "December 5th" in wrapped.answer_text
 
 
+def test_wrap_allows_a_digit_only_or_alphanumeric_product_id_from_a_varchar_column():
+    # Regression test: found live while running S24's required evaluation
+    # case (the "which products are selling the most" canonical question).
+    # product_id is a VARCHAR column, but real values are often all-digits
+    # ("22423") or digits-plus-a-letter ("85123A") - quoting one verbatim
+    # in the narrative was flagged as a fabricated number, since
+    # _numeric_candidates only ever looked at numeric/date-typed cells,
+    # never string cells.
+    result = _result(
+        columns=[
+            ColumnSpec(name="product_id", type="VARCHAR"),
+            ColumnSpec(name="revenue", type="DOUBLE"),
+        ],
+        rows=[["22423", 327839.15], ["85123A", 253781.57]],
+    )
+    fake_client = _FakeClient(
+        answer_text="The top-selling product is 22423 at $327,839.15, "
+        "followed by 85123A at $253,781.57."
+    )
+    wrapped = wrap("Which products sell the most?", result, _chart_spec(), client=fake_client)
+    assert "22423" in wrapped.answer_text
+
+
+def test_wrap_allows_the_magnitude_of_a_negative_value_phrased_as_a_loss():
+    # Regression test: found live while running S24's required evaluation
+    # case (the "least performing products" canonical question, where
+    # scope.md's admin-StockCode-as-worst-product finding produces a
+    # genuinely negative revenue). "-147614.08" phrased as "a loss of
+    # $147,614.08" is faithful to the data - the sign is conveyed in
+    # words, not digits - but wasn't grounded since only the exact signed
+    # value was a candidate.
+    result = _result(
+        columns=[
+            ColumnSpec(name="product_id", type="VARCHAR"),
+            ColumnSpec(name="revenue", type="DOUBLE"),
+        ],
+        rows=[["B", -147614.08], ["D", -1318.18]],
+    )
+    fake_client = _FakeClient(
+        answer_text="Product B is the worst performer with a loss of $147,614.08, "
+        "followed by product D with a loss of $1,318.18."
+    )
+    wrapped = wrap(
+        "Which products are the least performing?", result, _chart_spec(), client=fake_client
+    )
+    assert "147,614.08" in wrapped.answer_text
+
+
 def test_prompt_includes_the_question_and_result_rows():
     fake_client = _FakeClient()
     wrap("How many orders?", _result(), _chart_spec(), client=fake_client)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from data_analyst_agent.agent.chart_select import render, select_chart_type
+from data_analyst_agent.agent.chart_select import build_chart_spec, render, select_chart_type
 from data_analyst_agent.models.entities import ChartSpec, ColumnSpec, ResultData
 
 
@@ -80,6 +80,63 @@ def test_date_plus_multiple_metrics_is_still_line():
         [["2011-01-01", 100.0, 5]],
     )
     assert select_chart_type(result) == "line"
+
+
+# --- build_chart_spec(): full ChartSpec assembly, added for S24 ---
+
+
+def test_build_chart_spec_scalar_sets_y_axis_to_the_column_name():
+    result = _result([("order_count", "BIGINT")], [[52612]])
+    spec = build_chart_spec(result)
+    assert spec.chart_type == "scalar"
+    assert spec.data == [[52612]]
+    assert spec.x_axis is None
+    assert spec.y_axis == "order_count"
+
+
+def test_build_chart_spec_line_sets_x_and_y_for_a_date_plus_one_metric():
+    result = _result(
+        [("date", "DATE"), ("net_revenue", "DOUBLE")],
+        [["2011-01-01", 100.0], ["2011-01-02", 200.0]],
+    )
+    spec = build_chart_spec(result)
+    assert spec.chart_type == "line"
+    assert spec.x_axis == "date"
+    assert spec.y_axis == "net_revenue"
+    assert spec.data == result.rows
+
+
+def test_build_chart_spec_line_leaves_y_axis_unset_with_multiple_metrics():
+    result = _result(
+        [("date", "DATE"), ("revenue", "DOUBLE"), ("order_count", "BIGINT")],
+        [["2011-01-01", 100.0, 5]],
+    )
+    spec = build_chart_spec(result)
+    assert spec.chart_type == "line"
+    assert spec.x_axis == "date"
+    assert spec.y_axis is None
+
+
+def test_build_chart_spec_bar_sets_x_to_categorical_and_y_to_metric():
+    result = _result(
+        [("country", "VARCHAR"), ("revenue", "DOUBLE")],
+        [["United Kingdom", 100.0], ["Germany", 50.0]],
+    )
+    spec = build_chart_spec(result)
+    assert spec.chart_type == "bar"
+    assert spec.x_axis == "country"
+    assert spec.y_axis == "revenue"
+
+
+def test_build_chart_spec_table_leaves_axes_unset():
+    result = _result(
+        [("product_id", "VARCHAR"), ("description", "VARCHAR"), ("revenue", "DOUBLE")],
+        [["85123A", "WHITE HANGING HEART T-LIGHT HOLDER", 263109.67]],
+    )
+    spec = build_chart_spec(result)
+    assert spec.chart_type == "table"
+    assert spec.x_axis is None
+    assert spec.y_axis is None
 
 
 # --- render(): mocked Streamlit, verifying the right widget is called ---

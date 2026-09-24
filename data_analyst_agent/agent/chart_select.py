@@ -54,6 +54,46 @@ def select_chart_type(result: ResultData) -> ChartType:
     return "table"
 
 
+def build_chart_spec(result: ResultData) -> ChartSpec:
+    """Assembles a fully-populated `ChartSpec` (data + x_axis/y_axis) from
+    a `ResultData` - added for S24, beyond S21's literal acceptance
+    criteria (`select_chart_type(result) -> ChartType` only). `Answer.chart_spec`
+    (S01) needs a complete `ChartSpec` to render, not just the bare type,
+    and this is the natural place for that assembly: it's still a pure,
+    deterministic function of result shape, reusing the same
+    `select_chart_type`/`_column_kind`/`_is_date_type` logic rather than
+    duplicating it in the orchestrator.
+
+    Axis convention (a design decision beyond anything a doc specifies):
+    `scalar` sets `y_axis` to the single column's name (`render`'s own
+    label fallback); `line` sets `x_axis` to the first date column and
+    `y_axis` to the other column's name when there are exactly two columns
+    total (the common date+metric case), else leaves `y_axis` unset when
+    there's more than one candidate metric column - ambiguous, not
+    guessed; `bar` sets `x_axis`/`y_axis` to the categorical/metric column
+    names respectively, per `select_chart_type`'s own bar rule; `table`
+    sets neither, since `render` never reads them for a table.
+    """
+    chart_type = select_chart_type(result)
+    x_axis: str | None = None
+    y_axis: str | None = None
+
+    if chart_type == "scalar":
+        y_axis = result.columns[0].name
+    elif chart_type == "line":
+        date_column = next(c for c in result.columns if _is_date_type(c.type))
+        x_axis = date_column.name
+        others = [c for c in result.columns if c.name != x_axis]
+        if len(others) == 1:
+            y_axis = others[0].name
+    elif chart_type == "bar":
+        by_kind = {_column_kind(c): c.name for c in result.columns}
+        x_axis = by_kind["categorical"]
+        y_axis = by_kind["metric"]
+
+    return ChartSpec(chart_type=chart_type, data=result.rows, x_axis=x_axis, y_axis=y_axis)
+
+
 def _to_dataframe(chart_spec: ChartSpec, columns: list[ColumnSpec] | None) -> pd.DataFrame:
     column_names = [c.name for c in columns] if columns else None
     return pd.DataFrame(chart_spec.data, columns=column_names)
