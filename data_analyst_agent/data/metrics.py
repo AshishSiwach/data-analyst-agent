@@ -12,6 +12,18 @@ into a queryable `metric_dictionary` DuckDB table, per this slice's Goal
 with its siblings (ingest/categorize/views all build a table) - useful
 for the eval harness or ad-hoc inspection, not for the agent's runtime
 tool surface.
+
+Bug found and fixed post-S25, during S26: `revenue`/`units_sold`'s
+`sql_fragment`s originally referenced `net_line_revenue`/`net_quantity` -
+columns that don't exist anywhere in the real schema (`v_order_lines`
+only has `line_revenue`/`quantity`; "net" is achieved by summing every
+row, since a return row's quantity/line_revenue is already negative, not
+by a separately-named column). Confirmed via S25's live eval report: with
+the broken fragment injected into `generate_sql`'s prompt, the model
+couldn't use it literally and instead improvised `WHERE is_return =
+FALSE` for "net of returns" questions - which computes the opposite of
+net (excludes returns entirely, rather than letting their negative values
+offset the total). Fixed to reference the real columns directly.
 """
 
 from __future__ import annotations
@@ -31,7 +43,10 @@ METRICS: tuple[MetricDefinition, ...] = (
         metric_id="revenue",
         display_name="Revenue",
         definition="Sum of (quantity x unit price), net of returns.",
-        sql_fragment="SUM(net_line_revenue)",
+        # v_order_lines has no "net_"-prefixed column - a return row's
+        # line_revenue is already negative, so summing line_revenue over
+        # every row (no is_return filter) is what nets returns out.
+        sql_fragment="SUM(line_revenue)",
         unit="currency",
         default_direction="desc",
     ),
@@ -55,7 +70,10 @@ METRICS: tuple[MetricDefinition, ...] = (
         metric_id="units_sold",
         display_name="Units Sold",
         definition="Sum of quantity, net of returns.",
-        sql_fragment="SUM(net_quantity)",
+        # Same reasoning as revenue above: a return row's quantity is
+        # already negative, so SUM(quantity) over every row nets it out -
+        # there is no separate "net_quantity" column.
+        sql_fragment="SUM(quantity)",
         unit="count",
         default_direction="desc",
     ),

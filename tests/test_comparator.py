@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal
 
 from data_analyst_agent.eval.comparator import RELATIVE_TOLERANCE, compare
@@ -105,3 +106,37 @@ def test_bool_does_not_match_unequal_int():
 
 def test_tolerance_constant_is_point_one_percent():
     assert RELATIVE_TOLERANCE == 0.001
+
+
+def test_live_date_object_matches_json_round_tripped_iso_string():
+    # Regression test: found live during S26, via S25's harness report -
+    # an agent result carries real datetime.date objects (straight from
+    # DuckDB); a gold row loaded from gold.jsonl carries a JSON-
+    # deserialized ISO string, since GoldQuestion.gold_result.rows is
+    # typed list[list[Any]] and pydantic never coerces it back to a date.
+    # date(2009, 12, 1) == "2009-12-01" is False in plain Python even
+    # though they're the same value - this silently failed 3/20 correct
+    # basic-bucket answers before the fix.
+    a = _result(["earliest_order_date"], [[date(2009, 12, 1)]])
+    g = _result(["earliest_order_date"], [["2009-12-01"]])
+    assert compare(a, g) is True
+
+
+def test_datetime_object_matches_date_only_iso_string():
+    a = _result(["order_date"], [[datetime(2011, 12, 5, 14, 30, 0)]])
+    g = _result(["order_date"], [["2011-12-05"]])
+    assert compare(a, g) is True
+
+
+def test_mismatched_dates_still_fail():
+    a = _result(["earliest_order_date"], [[date(2009, 12, 1)]])
+    g = _result(["earliest_order_date"], [["2009-12-02"]])
+    assert compare(a, g) is False
+
+
+def test_two_iso_date_strings_still_compare_via_plain_equality():
+    # Both sides already strings (e.g. two gold-authored fixtures) - no
+    # date coercion needed, plain string equality still works.
+    a = _result(["date"], [["2011-12-05"]])
+    g = _result(["date"], [["2011-12-05"]])
+    assert compare(a, g) is True

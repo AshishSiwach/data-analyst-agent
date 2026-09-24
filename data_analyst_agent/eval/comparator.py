@@ -8,11 +8,26 @@ type-safe key before comparing pairwise (not by inferring which column is
 <metric> DESC, product_id ASC`) is a prompt/gold-authoring rule for
 producing *a* deterministic order, not something this module needs to
 parse back out of two already-materialized result sets.
+
+Bug found and fixed post-S25, during S26: a DATE-typed cell compared
+unequal to its own correct value across every single date-column gold
+question (`basic_011`/`basic_017`/`basic_018` - confirmed via harness
+report data: the agent's SQL was literally byte-identical to gold's for
+017/018, yet `compare()` still returned False). Cause: a live agent
+result carries real `datetime.date`/`datetime` objects (straight from
+DuckDB), while a gold row loaded from `gold.jsonl` carries a JSON-
+deserialized ISO string (`GoldQuestion.gold_result.rows` is typed
+`list[list[Any]]`, so pydantic never coerces it back into a `date`) -
+`date(2009, 12, 1) == "2009-12-01"` is `False` in plain Python, no matter
+how correct the underlying value is. Fixed in `_values_equal` by
+normalizing both sides to a `date` when either one already is a
+`date`/`datetime`, before falling back to plain equality.
 """
 
 from __future__ import annotations
 
 import math
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -56,7 +71,24 @@ def _values_equal(agent_value: Any, gold_value: Any) -> bool:
             rel_tol=RELATIVE_TOLERANCE,
             abs_tol=_ABSOLUTE_TOLERANCE,
         )
+    if isinstance(agent_value, (date, datetime)) or isinstance(gold_value, (date, datetime)):
+        a_date, g_date = _as_date(agent_value), _as_date(gold_value)
+        if a_date is not None and g_date is not None:
+            return a_date == g_date
     return agent_value == gold_value
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
 
 
 def _row_sort_key(row: list[Any]) -> tuple:
