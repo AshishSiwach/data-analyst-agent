@@ -139,6 +139,50 @@ def test_build_chart_spec_table_leaves_axes_unset():
     assert spec.y_axis is None
 
 
+def test_build_chart_spec_sets_column_names_for_every_chart_type():
+    # Regression test: found live, post-S27, via direct user feedback -
+    # a rendered table showed no column headers at all, since "table"
+    # deliberately gets no x_axis/y_axis and nothing else carried column
+    # names into the UI.
+    table_result = _result(
+        [("product_id", "VARCHAR"), ("description", "VARCHAR"), ("revenue", "DOUBLE")],
+        [["85123A", "WHITE HANGING HEART T-LIGHT HOLDER", 263109.67]],
+    )
+    assert build_chart_spec(table_result).column_names == [
+        "product_id",
+        "description",
+        "revenue",
+    ]
+
+    scalar_result = _result([("order_count", "BIGINT")], [[52612]])
+    assert build_chart_spec(scalar_result).column_names == ["order_count"]
+
+    bar_result = _result(
+        [("country", "VARCHAR"), ("revenue", "DOUBLE")],
+        [["United Kingdom", 100.0]],
+    )
+    assert build_chart_spec(bar_result).column_names == ["country", "revenue"]
+
+
+@patch("data_analyst_agent.agent.chart_select.st")
+def test_render_table_uses_chart_spec_column_names_when_no_columns_passed(mock_st):
+    spec = ChartSpec(
+        chart_type="table",
+        data=[["85123A", "WHITE HANGING HEART T-LIGHT HOLDER", 263109.67]],
+        column_names=["product_id", "description", "revenue"],
+    )
+    render(spec)
+    df = mock_st.dataframe.call_args.args[0]
+    assert list(df.columns) == ["product_id", "description", "revenue"]
+
+
+@patch("data_analyst_agent.agent.chart_select.st")
+def test_render_scalar_uses_chart_spec_column_names_as_label_fallback(mock_st):
+    spec = ChartSpec(chart_type="scalar", data=[[52612]], column_names=["order_count"])
+    render(spec)
+    assert mock_st.metric.call_args.kwargs["label"] == "order_count"
+
+
 # --- render(): mocked Streamlit, verifying the right widget is called ---
 
 

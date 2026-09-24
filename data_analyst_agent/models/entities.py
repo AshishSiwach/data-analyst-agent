@@ -170,10 +170,23 @@ class SqlRetryOutcome(BaseModel):
 
 
 class ChartSpec(BaseModel):
+    """`x_axis`/`y_axis` match InformationModel.md's literal schema
+    exactly - "set only for line/bar." `column_names` is an addition
+    (found live, post-S27, via direct user feedback that rendered
+    tables showed no headers at all): a `table`-type ChartSpec has no
+    x_axis/y_axis by design (S24's build_chart_spec sets neither for
+    `table`, per InformationModel.md's own scoping), so there was no
+    field anywhere in Answer's object graph carrying a table's column
+    names into the UI. `column_names` (all columns, in order, for every
+    chart type - not just table) closes that gap without touching
+    x_axis/y_axis's existing, doc-specified meaning.
+    """
+
     chart_type: ChartType
     data: list[list[Any]]
     x_axis: str | None = None
     y_axis: str | None = None
+    column_names: list[str] | None = None
 
 
 class FailureDiagnosis(BaseModel):

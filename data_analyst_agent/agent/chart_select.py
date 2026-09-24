@@ -55,14 +55,14 @@ def select_chart_type(result: ResultData) -> ChartType:
 
 
 def build_chart_spec(result: ResultData) -> ChartSpec:
-    """Assembles a fully-populated `ChartSpec` (data + x_axis/y_axis) from
-    a `ResultData` - added for S24, beyond S21's literal acceptance
-    criteria (`select_chart_type(result) -> ChartType` only). `Answer.chart_spec`
-    (S01) needs a complete `ChartSpec` to render, not just the bare type,
-    and this is the natural place for that assembly: it's still a pure,
-    deterministic function of result shape, reusing the same
-    `select_chart_type`/`_column_kind`/`_is_date_type` logic rather than
-    duplicating it in the orchestrator.
+    """Assembles a fully-populated `ChartSpec` (data + x_axis/y_axis/
+    column_names) from a `ResultData` - added for S24, beyond S21's
+    literal acceptance criteria (`select_chart_type(result) -> ChartType`
+    only). `Answer.chart_spec` (S01) needs a complete `ChartSpec` to
+    render, not just the bare type, and this is the natural place for
+    that assembly: it's still a pure, deterministic function of result
+    shape, reusing the same `select_chart_type`/`_column_kind`/
+    `_is_date_type` logic rather than duplicating it in the orchestrator.
 
     Axis convention (a design decision beyond anything a doc specifies):
     `scalar` sets `y_axis` to the single column's name (`render`'s own
@@ -72,7 +72,13 @@ def build_chart_spec(result: ResultData) -> ChartSpec:
     there's more than one candidate metric column - ambiguous, not
     guessed; `bar` sets `x_axis`/`y_axis` to the categorical/metric column
     names respectively, per `select_chart_type`'s own bar rule; `table`
-    sets neither, since `render` never reads them for a table.
+    sets neither, matching InformationModel.md's own "x_axis/y_axis: set
+    only for line/bar" scoping.
+
+    `column_names` (found live, post-S27) is set for every chart type,
+    including `table` - the one place `Answer`'s object graph otherwise
+    had no way to carry a table's column headers into the UI at all,
+    since `table` deliberately gets no `x_axis`/`y_axis`.
     """
     chart_type = select_chart_type(result)
     x_axis: str | None = None
@@ -91,23 +97,42 @@ def build_chart_spec(result: ResultData) -> ChartSpec:
         x_axis = by_kind["categorical"]
         y_axis = by_kind["metric"]
 
-    return ChartSpec(chart_type=chart_type, data=result.rows, x_axis=x_axis, y_axis=y_axis)
+    return ChartSpec(
+        chart_type=chart_type,
+        data=result.rows,
+        x_axis=x_axis,
+        y_axis=y_axis,
+        column_names=[c.name for c in result.columns],
+    )
 
 
 def _to_dataframe(chart_spec: ChartSpec, columns: list[ColumnSpec] | None) -> pd.DataFrame:
-    column_names = [c.name for c in columns] if columns else None
+    if columns:
+        column_names = [c.name for c in columns]
+    else:
+        column_names = chart_spec.column_names
     return pd.DataFrame(chart_spec.data, columns=column_names)
+
+
+def _first_column_name(chart_spec: ChartSpec, columns: list[ColumnSpec] | None) -> str | None:
+    if columns:
+        return columns[0].name
+    if chart_spec.column_names:
+        return chart_spec.column_names[0]
+    return None
 
 
 def render(chart_spec: ChartSpec, columns: list[ColumnSpec] | None = None) -> None:
     """Renders `chart_spec` via Streamlit's native widgets, per
     `_docs/technology_stack.md` §7. `columns` (from the same `ResultData`
-    `chart_spec.data` was built from) supplies real column names for
-    axis labeling - `ChartSpec.data` itself is just raw row arrays.
+    `chart_spec.data` was built from) supplies real column names when the
+    caller happens to have them; `chart_spec.column_names` (set by
+    `build_chart_spec`) is the fallback and, in practice, the usual path -
+    `ChartSpec.data` itself is just raw row arrays.
     """
     if chart_spec.chart_type == "scalar":
         value = chart_spec.data[0][0] if chart_spec.data and chart_spec.data[0] else None
-        label = chart_spec.y_axis or (columns[0].name if columns else "Value")
+        label = chart_spec.y_axis or _first_column_name(chart_spec, columns) or "Value"
         st.metric(label=label, value=value)
         return
 
