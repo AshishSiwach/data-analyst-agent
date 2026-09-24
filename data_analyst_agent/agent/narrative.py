@@ -113,39 +113,41 @@ def _build_user_content(question: str, result: SqlExecutionResult, chart_spec: C
 
 
 def _numeric_candidates(result: SqlExecutionResult, question: str) -> set[float]:
+    """The pool of numbers a narrative is allowed to state. Two sources,
+    deliberately kept separate:
+
+    1. A general rule, applied uniformly to every cell regardless of
+    type: whatever number(s) appear in the cell's own string form are
+    groundable. This is what makes a VARCHAR identifier ("22423",
+    "85123A") or a formatted numeric value groundable without a
+    type-specific branch - a new column shape doesn't need its own
+    special case here. (Found live, via S24's required evaluation: this
+    used to only run on str-typed cells, so a numeric-looking id was
+    missed entirely.)
+    2. A small, explicit, closed list of *semantic* transforms that no
+    amount of string-scanning could derive, because the words carrying
+    the meaning aren't the digits themselves: a fraction shown as a
+    percentage, a negative metric phrased as "a loss of $X", a date's
+    day/month/year spoken as "December 5th" rather than "2011-12-05".
+    """
     candidates: set[float] = {float(len(result.rows))}
     for row in result.rows:
         for value in row:
             if isinstance(value, bool):
                 continue
+            candidates.update(_extract_numbers(str(value)))
             if isinstance(value, (int, float, Decimal)):
                 v = float(value)
-                candidates.add(v)
                 candidates.add(v * 100)  # fraction -> percentage display
-                # A negative metric (e.g. revenue=-147614.08) is often
-                # faithfully phrased as "a loss of $147,614.08" - the sign
-                # is conveyed in words, not digits, so the magnitude alone
-                # must be groundable too.
-                candidates.add(abs(v))
+                candidates.add(abs(v))  # negative metric phrased as "a loss of $X"
             elif isinstance(value, date):  # datetime is a date subclass too
-                # A truthful phrase like "December 5th" or "in 2011" draws
-                # on a date value's own day/month/year, not a fabricated
-                # number - these must be grounded too, or every date-typed
-                # column produces false-positive guardrail violations.
+                # str(value)'s ISO form ("2011-12-05") mis-parses under the
+                # general regex above - the '-' separators read as unary
+                # minus, so month/day would come out negative. The
+                # correctly-signed components are added explicitly instead.
                 candidates.add(float(value.day))
                 candidates.add(float(value.month))
                 candidates.add(float(value.year))
-            elif isinstance(value, str):
-                date_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", value)
-                if date_match:
-                    year, month, day = date_match.groups()
-                    candidates.update({float(year), float(month), float(day)})
-                # A VARCHAR identifier column (product_id/stock code, e.g.
-                # "22423" or "85123A") can be all-digits or digits-plus-
-                # letters - a truthful "product ID 22423" is quoting this
-                # cell verbatim, not fabricating a number, so any numeric
-                # substring of a string cell is groundable too.
-                candidates.update(_extract_numbers(value))
     candidates.update(_extract_numbers(question))
     return candidates
 
