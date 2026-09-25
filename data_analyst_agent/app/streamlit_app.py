@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -96,8 +97,16 @@ def _render_success(answer: Answer) -> None:
     st.write(answer.answer_text)
     if answer.assumption_disclosed:
         st.caption(f"Assumption: {answer.assumption_disclosed}")
-    if answer.chart_spec is not None:
-        render_chart(answer.chart_spec)
+    chart_spec = answer.chart_spec
+    if chart_spec is not None:
+        render_chart(chart_spec)
+        # A chart (scalar/line/bar) encodes the result visually, which
+        # loses the exact values a table shows - offer the same rows as a
+        # plain table alongside it. A "table"-type chart already *is*
+        # this view, so there's nothing extra to add there.
+        if chart_spec.chart_type != "table":
+            with st.expander("Show data"):
+                st.dataframe(pd.DataFrame(chart_spec.data, columns=chart_spec.column_names))
     with st.expander("Show SQL"):
         st.code(answer.sql_shown or "", language="sql")
 
