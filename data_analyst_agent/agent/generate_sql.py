@@ -55,6 +55,17 @@ ORDER BY <metric> DESC, <id-or-name column> ASC (ASC on the metric for a \
 (e.g. "which products sell best") without stating how many to return, \
 default to LIMIT 5 rather than returning every row - an unbounded ranking \
 is rarely what's wanted and dwarfs the founder-facing answer.
+- For a "trend"/"over time"/"by month"/"by day" question where a date-part \
+is itself an OUTPUT column (not just a filter), use DATE_TRUNC (e.g. \
+DATE_TRUNC('month', order_date)) rather than EXTRACT (e.g. \
+EXTRACT(MONTH FROM order_date)) for that output column - DATE_TRUNC keeps \
+a real calendar date (year included, so months from different years never \
+collide) and renders as a proper chart; EXTRACT produces a bare number \
+(e.g. 1-12) that loses the year and won't be charted as a time series. \
+EXTRACT is still the right choice for filtering/grouping by a date part \
+that is NOT itself an output column (e.g. WHERE EXTRACT(YEAR FROM \
+order_date) = 2011) - this rule is only about what a "when" output column \
+itself should look like.
 - If the question is ambiguous about which metric to rank or filter by \
 (e.g. "top-selling" without a qualifier), default to revenue - this is \
 answerable, not a case for refusing. The same default applies when a broad, \
@@ -99,7 +110,12 @@ on the full name. "Market" and "region" are ordinary business synonyms for \
 "country" in this dataset - there is no finer-grained market/region \
 concept to look for; "which market grew fastest" or "top regions by \
 revenue" both mean grouping by the country column, same as if the \
-question had said "country."
+question had said "country." This is about matching the data's actual \
+spelling, not about preferring long names on principle: Ireland is \
+stored as exactly 'EIRE' (not 'Ireland') - a real, valid value in this \
+column, not an abbreviation to be suspicious of. When in doubt about a \
+specific country's exact spelling, attempt the most standard spelling \
+first rather than declining - a wrong spelling can be corrected on retry.
 - "Net of returns" (the revenue and units_sold metrics' own definition) \
 means summing every row in v_order_lines, including is_return rows - a \
 return row's quantity and line_revenue are already negative, so a plain \
@@ -108,14 +124,24 @@ SUM() over all rows nets them out automatically. Do not add \
 net of returns - that excludes returns entirely instead of netting them, \
 which computes a different, larger number than what was asked for. Only \
 filter is_return when the question explicitly asks for a returns-only or \
-gross-before-returns figure.
-- For a "top/worst N products by <metric>" or "which products are \
-least/most performing" question, prefer v_products directly (it already \
+gross-before-returns figure. v_products.total_revenue/total_units_sold \
+are themselves NOT net of returns (they already exclude is_return rows \
+entirely, a different, narrower convention than "net") - never substitute \
+v_products for a question that explicitly says "net of returns"; compute \
+directly from v_order_lines as described above instead, even if that \
+means not using v_products for that one question.
+- For a "top/worst N products by <metric>" question ranking individual \
+products (not a category-level aggregate), or "which products are \
+least/most performing," prefer v_products directly (it already \
 has total_revenue, total_units_sold, description, and top_region \
 precomputed) over manually aggregating v_order_lines - it's simpler, \
 already correctly scoped per its own documented convention, and lets you \
 include description in the result so the founder isn't shown a bare \
-product code alone. Likewise, for a "which customer(s)" revenue/lifetime-value \
+product code alone. This preference is for ranking products themselves - \
+it does not extend to aggregating v_products by category, which would \
+silently inherit its non-net-of-returns convention; a category-level \
+question still follows the "net of returns" rule above when asked for \
+one. Likewise, for a "which customer(s)" revenue/lifetime-value \
 question, prefer v_customers.lifetime_revenue over manually \
 aggregating v_orders by customer_id - v_orders.customer_id can be null \
 (orders with no linked customer), and grouping by it without excluding \
