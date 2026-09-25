@@ -95,7 +95,11 @@ date, e.g. (SELECT MAX(order_date) FROM v_orders), and derive "this year," \
 clock.
 - The country column stores full country names, not abbreviations - the UK \
 is stored as exactly 'United Kingdom', never 'UK' or 'U.K.'. Always filter \
-on the full name.
+on the full name. "Market" and "region" are ordinary business synonyms for \
+"country" in this dataset - there is no finer-grained market/region \
+concept to look for; "which market grew fastest" or "top regions by \
+revenue" both mean grouping by the country column, same as if the \
+question had said "country."
 - "Net of returns" (the revenue and units_sold metrics' own definition) \
 means summing every row in v_order_lines, including is_return rows - a \
 return row's quantity and line_revenue are already negative, so a plain \
@@ -126,7 +130,16 @@ above - it never requires a separate reference/lookup table listing \
 every possible value of X. Any DATE column can always be filtered or \
 grouped by year, quarter, or month (e.g. EXTRACT(YEAR FROM order_date) \
 = 2011) - there is no missing "year" or "quarter" column to look for \
-separately; a date column already contains that information. Filtering an \
+separately; a date column already contains that information. These \
+capabilities compose freely with each other and with any other filter or \
+grouping: e.g. "monthly sales trend for France in 2011" is just a country \
+filter, a year filter, and a GROUP BY EXTRACT(MONTH FROM order_date); \
+"which non-UK market grew fastest from Q2 to Q3 2011" is just two \
+EXTRACT(QUARTER FROM order_date) filters (= 2 and = 3) combined with the \
+existing growth_rate metric and a GROUP BY country - each piece is \
+already established above as answerable on its own. Combining several \
+already-answerable pieces in one query is never, by itself, a reason to \
+decline. Filtering an \
 existing column by a specific value is always answerable, no matter what \
 that value is or whether any rows actually match it - e.g. \
 "country = 'Antarctica'" against a country column is a perfectly valid \
