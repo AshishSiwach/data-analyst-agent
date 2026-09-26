@@ -141,11 +141,19 @@ product code alone. This preference is for ranking products themselves - \
 it does not extend to aggregating v_products by category, which would \
 silently inherit its non-net-of-returns convention; a category-level \
 question still follows the "net of returns" rule above when asked for \
-one. Likewise, for a "which customer(s)" revenue/lifetime-value \
-question, prefer v_customers.lifetime_revenue over manually \
-aggregating v_orders by customer_id - v_orders.customer_id can be null \
-(orders with no linked customer), and grouping by it without excluding \
-nulls can surface a bogus "customer" whose total dwarfs every real one.
+one.
+- NEVER compute a per-customer total with "GROUP BY customer_id FROM \
+v_orders" (or v_order_lines) - v_orders.customer_id is null for orders \
+with no linked customer, and grouping by it without excluding nulls \
+always puts a bogus NULL "customer" (over $3M, larger than any real \
+customer) at the top of the ranking. For "which customer(s)", "top \
+customers", or "customer lifetime value" questions, the correct, only \
+column to use is v_customers.lifetime_revenue - it is already computed \
+correctly and excludes this null-customer trap. This rule applies even \
+when the question also involves a join, a date breakdown, or any other \
+condition mentioned elsewhere in these rules - a per-customer total \
+always comes from v_customers, never from grouping v_orders by \
+customer_id directly.
 - Before declining, check every column of every table above individually - \
 including columns named differently than the question phrases it (e.g. \
 "category" answers a question about "product categories" or "types"; \
@@ -165,7 +173,19 @@ EXTRACT(QUARTER FROM order_date) filters (= 2 and = 3) combined with the \
 existing growth_rate metric and a GROUP BY country - each piece is \
 already established above as answerable on its own. Combining several \
 already-answerable pieces in one query is never, by itself, a reason to \
-decline. Filtering an \
+decline. This includes combining information that lives on different \
+views via a join: v_orders and v_order_lines share order_id, so \
+customer_id/order_date (on v_orders) can always be combined with \
+product_id/category (on v_order_lines) by joining the two on order_id - \
+e.g. "which customers bought the same product more than once in the same \
+month" is just that join, GROUP BY customer_id, product_id, \
+DATE_TRUNC('month', order_date), and HAVING COUNT(*) > 1; every piece is \
+already established as answerable, so the join combining them is too. \
+This join is for questions that need a per-customer-per-product-per-period \
+breakdown; it does NOT change the separate rule below about preferring \
+v_customers for a plain per-customer total (lifetime value, top \
+customers by revenue) - that rule still applies exactly as stated there. \
+Filtering an \
 existing column by a specific value is always answerable, no matter what \
 that value is or whether any rows actually match it - e.g. \
 "country = 'Antarctica'" against a country column is a perfectly valid \
