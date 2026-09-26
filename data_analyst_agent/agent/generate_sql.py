@@ -15,7 +15,8 @@ call is spent on either.
 The dataset-specific facts, view-selection rules, and decline criteria
 (everything discovered the hard way through post-S26 live-testing - the
 UK/EIRE spelling, the v_customers null-guard, date-composability, etc.)
-live in the sibling `sql_domain_knowledge.md`, not inline in this file.
+live in `skills/sql_domain_knowledge.md` (a sibling of this module's
+parent package, not this file directly), not inline in this file.
 This is a deliberate extraction, not just tidiness: every one of those
 rules was added reactively after a real live-testing failure, the file
 kept growing, and a genuine regression was traced to a correctness-
@@ -45,7 +46,7 @@ MODEL = "gpt-4o-mini"
 
 VIEWS = ["v_orders", "v_order_lines", "v_customers", "v_products", "v_daily_revenue"]
 
-DOMAIN_KNOWLEDGE_PATH = Path(__file__).parent / "sql_domain_knowledge.md"
+DOMAIN_KNOWLEDGE_PATH = Path(__file__).parent.parent / "skills" / "sql_domain_knowledge.md"
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are a SQL analyst agent for a UK-based solo founder of an online \
