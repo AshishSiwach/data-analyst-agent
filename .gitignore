@@ -17,6 +17,15 @@ failures.jsonl
 query_audit.jsonl
 report/
 
+# Exception: the built database at repo root is committed as a deployment
+# data artifact for S29 (Streamlit Community Cloud has no persistent disk
+# and no build-time hook to run ingest/categorize/views itself - the repo
+# it clones must already contain a ready database). The raw source
+# workbook it's built from (data/raw/online_retail_II.xlsx) is already
+# committed for the same reason, so this isn't a new category of
+# committed data, just the processed form of what's already public here.
+!/data_analyst_agent.duckdb
+
 # OS / editor
 .DS_Store
 .vscode/
