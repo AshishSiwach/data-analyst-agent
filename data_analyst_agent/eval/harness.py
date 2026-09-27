@@ -44,6 +44,7 @@ from openai import OpenAI
 
 from data_analyst_agent.agent.diagnosis import SYSTEM_PROMPT_TEMPLATE as _DIAGNOSIS_PROMPT
 from data_analyst_agent.agent.generate_sql import SYSTEM_PROMPT_TEMPLATE as _GENERATE_SQL_PROMPT
+from data_analyst_agent.agent.generate_sql import _load_domain_knowledge
 from data_analyst_agent.agent.narrative import SYSTEM_PROMPT as _NARRATIVE_PROMPT
 from data_analyst_agent.agent.orchestrator import answer_question
 from data_analyst_agent.agent.session import SessionState
@@ -77,7 +78,14 @@ def load_gold_questions(gold_dir: Path | str) -> list[GoldQuestion]:
 
 
 def _prompt_hash() -> str:
-    combined = _GENERATE_SQL_PROMPT + _NARRATIVE_PROMPT + _DIAGNOSIS_PROMPT
+    # `_GENERATE_SQL_PROMPT` is the static template with a literal
+    # `{domain_knowledge}` placeholder - it never changes when
+    # `skills/sql_domain_knowledge.md` is edited, so that file's content is
+    # hashed alongside it explicitly to keep this hash a real fingerprint of
+    # the active prompt, not just of the code around it.
+    combined = (
+        _GENERATE_SQL_PROMPT + _load_domain_knowledge() + _NARRATIVE_PROMPT + _DIAGNOSIS_PROMPT
+    )
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:12]
 
 
