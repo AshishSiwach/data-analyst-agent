@@ -65,6 +65,12 @@ A few decisions worth explaining rather than just stating:
 
 This is the part of the project I'd point a fellow engineer to first. [`eval/comparator.py`](data_analyst_agent/eval/comparator.py) grades on the executed result, never on the SQL text. If the agent writes an uglier query that lands on the same numbers, it still passes, which is the right behavior since the founder never sees the SQL.
 
+First, what "accuracy" actually means here, since it's not quite the same thing in every bucket. Each bucket has 20 questions, and accuracy is just the fraction of those 20 the agent got right, but "right" means something different depending on the question. For basic and semantic questions, right means the agent's final answer, after up to three attempts, matches the gold result exactly (within the tolerances below). There's a correct number, and the agent either landed on it or it didn't.
+
+The adversarial bucket is mixed on purpose. Most of its 20 questions are normal, gradable questions, just harder ones (implicit time windows, ambiguous phrasing that still has a sensible default, missing entities). But 5 to 10 of them are questions I designed to be unanswerable: they ask about something the schema genuinely doesn't track, or reference something with no antecedent, or ask "why" something happened when this system only describes, never diagnoses. For those, there's no gold answer to match. "Right" means the agent recognized it couldn't answer and declined instead of guessing or hallucinating a number. So adversarial accuracy is a blend of "answered correctly" and "declined correctly," which is why it's held to a lower bar (40%) than basic and semantic.
+
+Graceful failure rate reports that same "declined correctly" signal on its own, isolated from the rest of the adversarial bucket. Adversarial accuracy blends two different things into one number (did it answer the normal hard questions, did it decline the unanswerable ones), so a system could hide a weak decline rate behind a strong answer rate and still look fine. Graceful failure rate is the unanswerable subset by itself: of just those 5 to 10 questions, what fraction ended in a real decline, complete with an explanation of what's missing and a rephrased question to try instead, rather than a wrong guess or a raw error.
+
 A few things it handles so grading stays fair:
 
 - Row order doesn't matter unless the question specifically implies one.
