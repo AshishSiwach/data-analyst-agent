@@ -1,75 +1,92 @@
 # Data Analyst Agent
 
-A portfolio-first descriptive SQL analyst agent for a UK-based e-commerce dataset.
+A SQL analyst agent for a UK e-commerce dataset. Ask it a business question in plain English, and it answers with a real number backed by a real, inspectable SQL query, not a guess.
 
-**Premise:** *Ask business questions in plain English, get correct answers backed by inspectable SQL, with an eval harness that proves it.* The differentiator is the eval — result-based grading against a hand-crafted gold set — not the agent itself.
+I built this as a portfolio project, but I tried to treat it like a real one: the eval harness came before the agent, every cleaning decision is written down somewhere, and the whole thing is meant to be picked apart. That's who this README is for, really: someone reviewing the work, someone deciding whether to hire me, or me in six months wondering why I made a particular call.
 
-**Persona:** a UK-based solo founder of an online giftware/homewares store, with some international customers. The dataset (Online Retail II, UCI) is that shape, so the persona and the data agree.
+**Try it live: https://data-analyst-agent-shopify.streamlit.app/**
 
-**Live demo:** **https://data-analyst-agent-shopify.streamlit.app/**
+A few questions to start with, the same ones I used to validate the whole build:
 
-Try any of the three questions the whole build was validated against:
-- *"Which products are selling the most in which region?"*
-- *"What is my average order value across all regions?"*
-- *"Which products are the least performing?"*
+- "Which products are selling the most in which region?"
+- "What is my average order value across all regions?"
+- "Which products are the least performing?"
 
-## Status
+## The premise
 
-All 30 slices of the [implementation plan](_docs/implementation_plan.md) are complete: agent, eval harness, Streamlit UI, Docker image, and the hosted demo above are all live.
+The interesting part of this project isn't the agent. Plenty of things can turn a question into SQL. The interesting part is the eval: a hand-built gold set of 60 questions with known-correct answers, graded automatically by actually running the SQL and comparing results, not by eyeballing whether the answer "sounds right." If I change a prompt, I can tell within a couple of minutes whether I made things better or worse. That loop is what let me iterate with any confidence at all.
 
-## How it works
+The persona behind the questions is a UK-based solo founder running an online giftware and homewares store, with a bit of international business. The dataset (Online Retail II, from the UCI repository) is genuinely that shape, so the story isn't invented to fit the data.
 
-A founder's question goes through a bounded, code-controlled pipeline, not an open-ended agent loop: **generate SQL → validate → execute (read-only, 5s timeout, 10k-row cap) → on error, retry with the failure fed back to the model, capped at 3 attempts → on success, a deterministic rule picks a chart type and an LLM wraps the result in one sentence → on exhausted retries, a second LLM call diagnoses *why* and suggests a rephrase**, rather than surfacing a raw stack trace. `agent/` holds each stage as its own module; `data/views.py` is the semantic layer the agent actually queries (`v_orders`, `v_order_lines`, `v_customers`, `v_products`, `v_daily_revenue`) — built once from the raw data, so the agent never re-derives a business definition (like "net revenue" or "lifetime value") from scratch inside a prompt. Full design rationale in [`_docs/Architecture.md`](_docs/Architecture.md).
+## Where things stand
 
-## Results (final harness run)
+All 30 steps of the [build plan](_docs/implementation_plan.md) are done. The agent, the eval harness, the Streamlit UI, the Docker image, and the hosted demo linked above are all live and working together.
 
-| Bucket | Accuracy | Floor (`scope.md`) |
+## How it actually works
+
+Nothing here is an open-ended agent freely deciding what to do next. It's a fixed pipeline, and I mean that as a design choice, not a limitation: generate a SQL query, validate it, run it read-only with a 5 second timeout and a 10,000 row cap. If it fails, the error goes back to the model and it gets up to three attempts total. If it succeeds, a plain deterministic rule (no LLM involved) picks a chart type, and a small model wraps the result in one sentence a founder could read. If all three attempts fail, a second model call looks at the failure and explains why, then suggests a better way to ask.
+
+The other piece worth knowing about is `data/views.py`. Rather than let the agent invent what "net revenue" or "lifetime value" means every time it writes a query, those definitions are baked once into a set of semantic-layer views (`v_orders`, `v_order_lines`, `v_customers`, `v_products`, `v_daily_revenue`), and the agent just queries them. The full reasoning behind this architecture, including the alternatives I considered and rejected, is in [`_docs/Architecture.md`](_docs/Architecture.md).
+
+## Results, from the last full run
+
+| Bucket | Accuracy | Required floor |
 |---|---|---|
-| Basic (20 questions) | 95.0% | ≥75% |
-| Semantic (20 questions) | 95.0% | ≥55% |
-| Adversarial (20 questions) | 90.0% | ≥40% |
-| **Graceful failure rate** | 100.0% | ≥80% |
+| Basic (20 questions) | 95.0% | 75% |
+| Semantic (20 questions) | 95.0% | 55% |
+| Adversarial (20 questions) | 90.0% | 40% |
+| Graceful failure rate | 100.0% | 80% |
 
-Median happy-path turn latency: ~1.8s (well under the <8s floor).
+Median latency on a happy-path question is around 1.8 seconds, well inside the 8 second target.
 
-Git commit `0c0cc66`, prompt hash `ae0c58f4725f`, 60 hand-crafted (question, gold-SQL, gold-result) triples, 20 per bucket. Reproduce this exact run:
+That run was against git commit `0c0cc66`, prompt hash `ae0c58f4725f`, across all 60 hand-written (question, gold SQL, gold result) triples. You can reproduce it yourself:
 
 ```bash
 uv run python -m data_analyst_agent.eval.harness --gold data_analyst_agent/eval/gold --out report/
 ```
 
-`report/report.md` is stamped with the git commit and a hash of the active prompt (including [`skills/sql_domain_knowledge.md`](data_analyst_agent/skills/sql_domain_knowledge.md)) for reproducibility. Numbers move a point or two run to run — the model isn't seeded — but stay well clear of the floors above across every run in this project's history.
+Every report gets stamped with the git commit and a hash of the active prompt (this includes [`skills/sql_domain_knowledge.md`](data_analyst_agent/skills/sql_domain_knowledge.md), where the actual rules live), so you can always tell exactly what produced a given number. The numbers do drift a point or two between runs since the model isn't seeded, but they've stayed comfortably clear of the floors above throughout the project.
 
-## Data-cleaning decisions
+## Decisions I made while cleaning the data
 
-Built from the raw Online Retail II workbook (~1M invoice line items, UK-based giftware retailer, 2009–2011) with no row drops or value changes at ingest — every cleaning rule lives in [`data/views.py`](data_analyst_agent/data/views.py), applied when the semantic-layer views are built, not scattered through prompts:
+The source is the raw Online Retail II workbook, roughly a million invoice line items from a real UK-based online giftware retailer between 2009 and 2011. Nothing gets dropped or altered on the way in. Every cleaning rule lives in code, in [`data/views.py`](data_analyst_agent/data/views.py), not scattered across prompts where it would be easy to lose track of.
 
-- **Cancellations need an "offsetting order" to be excluded.** The raw data has no explicit link between a cancellation invoice and the order it cancels. A cancellation is treated as cancelling a real purchase — and excluded from `v_orders` entirely — only if the same customer bought at least one of the same `StockCode`s elsewhere in a non-cancelled invoice. Of 8,292 cancellation invoices, 7,276 have this evidence; 1,016 don't (625 with a known customer and no stock overlap, 391 with no customer at all) and are excluded. Verified against the real data before committing to the rule, specifically to avoid a rule that excluded either everything or nothing.
-- **Cancellation detection is by `InvoiceNo`, not `StockCode`.** `scope.md`'s draft text described returns as "negative quantity, `StockCode` prefixed `C`" — checked against the real data and that's backwards; cancellations are `InvoiceNo`-prefixed with `C`, and `StockCode` is never `C`-prefixed. The views use the verified pattern.
-- **Orders with no `CustomerID` (~25% of rows) are kept for order- and product-level totals, excluded from customer-level views.** `v_orders` and `v_products` include them; `v_customers` filters `customer_id IS NOT NULL` — otherwise a single bogus "null customer" aggregates over $3M in orders and would rank as the top customer by revenue in any naive `GROUP BY customer_id`.
-- **"Net of returns" means summing every line, returns included** (a return row's quantity and revenue are already negative), not filtering returns out. `v_products.total_revenue`, by contrast, deliberately excludes return lines entirely — a narrower, different convention, used only for per-product ranking, never substituted into a question that explicitly asks for a *net* figure.
+A few decisions worth explaining rather than just stating:
 
-## Evaluation strategy
+**Cancellations only count if there's a real order behind them.** The raw data has no explicit link between a cancellation invoice and the order it's cancelling. So I made a rule: a cancellation is treated as real, and excluded from `v_orders` entirely, only if the same customer bought at least one of the same products elsewhere in a normal, non-cancelled invoice. Otherwise it's noise, not a return. Out of 8,292 cancellation invoices, 7,276 had that evidence and got excluded properly. The other 1,016 didn't (625 belonged to a known customer with no matching purchase, 391 had no customer at all), and I checked those numbers by hand before trusting the rule. I wanted a split that looked plausible, not a rule that quietly excluded everything or nothing.
 
-The actual differentiator of this project, built before the agent so "better" meant something objective throughout. [`eval/comparator.py`](data_analyst_agent/eval/comparator.py) grades on **executed result, never on SQL string** — an agent query that reaches the same numbers via a different (even more convoluted) route still passes:
+**Cancellation detection goes by invoice number, not stock code.** The original scope doc I wrote for myself said returns were "negative quantity, StockCode prefixed C." That's wrong; I checked it against the real data and it's actually the invoice number that's prefixed with C, never the stock code. Small thing, but it would have silently broken the cleaning logic if I'd trusted the doc over the data.
 
-- Result sets are compared order-invariantly unless the question implies a specific order.
-- Numeric values tolerate a 0.1% relative difference, so float rounding never causes a false failure.
-- Column count and values are checked positionally, not by column name — the agent's `SUM(price)` matches gold's `total_revenue` as long as the numbers agree.
+**Orders with no customer attached still count for revenue, just not for anything per-customer.** About a quarter of rows have no `CustomerID`. Those stay in `v_orders` and `v_products` so revenue and product totals are complete, but `v_customers` filters them out. If it didn't, a single "null customer" would aggregate over three million dollars in orders and show up as the store's best customer, which is obviously wrong.
 
-[`eval/harness.py`](data_analyst_agent/eval/harness.py) runs all 60 gold questions through the real agent (never mocked), reports per-bucket accuracy, the attempts-until-success distribution, and the graceful failure rate, and stamps every report with the git commit and prompt hash it ran against.
+**"Net of returns" means summing everything, returns included, not filtering returns out.** A returned line already carries a negative quantity and revenue, so a plain sum nets it out correctly on its own. `v_products.total_revenue` actually does the opposite on purpose (it excludes returns entirely), which is a narrower, different convention used only for ranking products, and I made sure it never gets substituted in for a question that explicitly asks for a net figure.
 
-## What `failures.jsonl` revealed
+## How the eval actually works
 
-Every fully-exhausted turn (all 3 attempts failed) is logged unconditionally to `failures.jsonl`, independent of the gold-set harness. Across development, the categories split roughly as designed — most failures (`schema_mismatch`) correctly identified a genuinely missing concept (sub-national regions like Scotland, email open rates, social media activity — none of which this schema tracks), and a handful (`ambiguity`) correctly caught questions with no answerable default ("compare *this* to last year" — nothing for "this" to refer to in a stateless, single-turn system).
+This is the part of the project I'd point a fellow engineer to first. [`eval/comparator.py`](data_analyst_agent/eval/comparator.py) grades on the executed result, never on the SQL text. If the agent writes an uglier query that lands on the same numbers, it still passes, which is the right behavior since the founder never sees the SQL.
 
-Two things it surfaced that weren't obvious from the gold set alone:
-- **A real SQL-generation bug** ("rank each product's revenue within its category") landed in the `bug` category exactly once — everything else was a correct refusal, not a crash, which is the failure-mode balance the design was aiming for.
-- **The same question classified differently on different days** ("what's driving the change in our numbers?" was diagnosed `ambiguity` once and `schema_mismatch` on a later run) — a reminder that the diagnosis step is itself an LLM call, not a deterministic classifier, so its category label is informative but not perfectly stable.
+A few things it handles so grading stays fair:
 
-Most entries, though, were the paper trail of this project's own iteration: several rows are the exact false-decline questions (a France monthly sales trend, a per-customer order-ranking question, an AOV-vs-average comparison) that got fixed during prompt tuning — `failures.jsonl` is what made those regressions visible in the first place, not the 60-question harness, since a few of them weren't in the gold set at all.
+- Row order doesn't matter unless the question specifically implies one.
+- Numbers are compared with a 0.1% tolerance, so floating point noise never fails a correct answer.
+- Columns are compared by position and value, not by name, so the agent's `SUM(price)` still matches gold's `total_revenue` as long as the actual numbers agree.
 
-## Running locally
+[`eval/harness.py`](data_analyst_agent/eval/harness.py) runs all 60 questions through the real agent, never a mock, and reports per-bucket accuracy, how many attempts each question needed, and the graceful failure rate. Every report is stamped with the commit and prompt hash it was generated from.
+
+## What failures.jsonl taught me
+
+Every turn that burns through all three attempts and still fails gets logged to `failures.jsonl`, separately from the gold-set harness. It's an honest record of everything that actually went wrong during development, and rereading it was more useful than I expected.
+
+Most of it looked exactly like I'd hoped: questions correctly declined because the schema genuinely can't answer them (Scotland-level detail, email open rates, social media activity, none of which this data tracks), and a handful correctly declined as ambiguous ("compare this to last year" has no "this" to point to in a system with no memory between turns).
+
+Two things stood out as genuinely useful signal:
+
+- One real SQL-generation bug ("rank each product's revenue within its category") got logged as a bug rather than misclassified as something else, which told me the failure taxonomy was actually doing its job.
+- The exact same question, "what's driving the change in our numbers," got diagnosed as ambiguous once and as a schema mismatch on a later run. That's a good reminder that the diagnosis step is itself a model call, not a lookup table, so its category label is useful but not something to treat as ground truth.
+
+Honestly, most of the log is just the paper trail of my own iteration. Several entries are the exact questions I later fixed prompt bugs for (a monthly sales trend for France, a per-customer order-ranking question, an AOV comparison), and this log is what surfaced some of those problems before they ever showed up in the 60-question gold set.
+
+## Running it locally
 
 ```bash
 uv venv --python 3.11 .venv && uv pip install -e ".[dev]"
@@ -85,16 +102,16 @@ uv run python -m data_analyst_agent.data.metrics
 uv run streamlit run data_analyst_agent/app/streamlit_app.py
 ```
 
-(The `data_analyst_agent.duckdb` already committed to this repo has all of the above already applied — the ingest-through-metrics steps are only needed to rebuild it from scratch.)
+The `data_analyst_agent.duckdb` file already committed in this repo has all of the above already applied. You only need the ingest-through-metrics steps if you want to rebuild it from scratch.
 
-## Running via Docker
+## Running it in Docker
 
 ```bash
 docker build -t data-analyst-agent .
 docker run -p 8501:8501 --env-file .env data-analyst-agent
 ```
 
-The container builds the database itself on first run if `data_analyst_agent.duckdb` isn't already present (see [`docker/entrypoint.sh`](docker/entrypoint.sh)); mounting the repo's own pre-built file in as a volume skips that and starts immediately:
+If `data_analyst_agent.duckdb` isn't already there, the container builds it on first run (see [`docker/entrypoint.sh`](docker/entrypoint.sh)). You can skip that and start instantly by mounting the repo's own copy in as a volume:
 
 ```bash
 docker run -p 8501:8501 --env-file .env \
@@ -102,7 +119,7 @@ docker run -p 8501:8501 --env-file .env \
   data-analyst-agent
 ```
 
-Run the eval harness the same way, in the same environment:
+The eval harness runs the same way, in the same environment:
 
 ```bash
 docker run --env-file .env \
@@ -111,28 +128,30 @@ docker run --env-file .env \
   python -m data_analyst_agent.eval.harness --gold data_analyst_agent/eval/gold --out report/
 ```
 
-## Design docs
+## Design docs, if you want the full reasoning
 
-| Doc | Answers |
+I wrote these before writing any code, and kept them updated as decisions changed. If you're the kind of reviewer who wants to see the thinking, not just the result, start here.
+
+| Doc | What's in it |
 |---|---|
-| [`scope.md`](_docs/scope.md) | What's in/out of scope, dataset & cleaning rules, metric dictionary, eval design, definition of done |
-| [`autonomy.md`](_docs/autonomy.md) | How much room each agent action gets to decide on its own (L0–L3 tiers) |
-| [`Architecture.md`](_docs/Architecture.md) | The control-flow pattern (bounded tool-use loop), full turn diagram, termination/failure paths |
-| [`Tools.md`](_docs/Tools.md) | The exact I/O contract for `run_sql`, and why the other candidate tools stayed deterministic code |
-| [`InformationModel.md`](_docs/InformationModel.md) | Every entity's schema — domain data, operational data, evaluation data |
-| [`technology_stack.md`](_docs/technology_stack.md) | Which library implements each layer, and why alternatives were rejected |
-| [`implementation_plan.md`](_docs/implementation_plan.md) | The 30-slice build backlog (S01–S30), each with acceptance criteria and a verification command |
+| [`scope.md`](_docs/scope.md) | What's in and out of scope, the dataset and cleaning rules, the metric dictionary, the eval design, and the definition of done |
+| [`autonomy.md`](_docs/autonomy.md) | How much room each agent action gets to decide on its own |
+| [`Architecture.md`](_docs/Architecture.md) | The control flow pattern, the full turn diagram, and why I didn't build an open-ended agent |
+| [`Tools.md`](_docs/Tools.md) | The exact contract for `run_sql`, and why the other candidate tools stayed as plain deterministic code instead |
+| [`InformationModel.md`](_docs/InformationModel.md) | Every entity's schema, domain data, operational data, and evaluation data |
+| [`technology_stack.md`](_docs/technology_stack.md) | What library runs each layer, and what I considered and ruled out |
+| [`implementation_plan.md`](_docs/implementation_plan.md) | The 30-step build plan, each step with its own acceptance criteria and a way to verify it |
 
 ## Stack
 
-OpenAI GPT-4o-mini (structured outputs, no tool-calling framework) · DuckDB (read-only) · `sqlglot` (SQL guardrail) · Streamlit (UI + session state) · a hand-rolled eval harness (`pandas`-based comparator) · Docker · Streamlit Community Cloud.
+OpenAI GPT-4o-mini for structured outputs (no agent framework), DuckDB as a read-only database, `sqlglot` as a SQL guardrail, Streamlit for the UI and session state, a hand-rolled eval harness with a pandas-based comparator, Docker, and Streamlit Community Cloud for hosting.
 
-## Definition of done (v1) — all met
+## Definition of done, and where it stands
 
-- ✅ ≥75% basic / ≥55% semantic / ≥40% adversarial accuracy on a 60-question gold set — see [Results](#results-final-harness-run)
-- ✅ ≥80% graceful-failure rate on designed-to-fail adversarial questions
-- ✅ Median turn latency <8s on the happy path
-- ✅ Hosted, publicly reachable Streamlit demo — https://data-analyst-agent-shopify.streamlit.app/
-- ✅ README with data-cleaning decisions, evaluation strategy, headline accuracy numbers, and `failures.jsonl` commentary (this file)
+- 95.0% / 95.0% / 90.0% basic, semantic, and adversarial accuracy, against floors of 75% / 55% / 40%. See [Results](#results-from-the-last-full-run).
+- 100.0% graceful failure rate, against a required 80%.
+- Median turn latency around 1.8 seconds, against an 8 second ceiling.
+- A hosted, public Streamlit demo: https://data-analyst-agent-shopify.streamlit.app/
+- This README, covering the cleaning decisions, the eval strategy, the headline numbers, and what `failures.jsonl` taught me.
 
-Full details in [`_docs/scope.md`](_docs/scope.md#definition-of-done-and-phase-2-backlog).
+All of it met. Full details in [`_docs/scope.md`](_docs/scope.md#definition-of-done-and-phase-2-backlog).
