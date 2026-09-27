@@ -19,6 +19,7 @@ from data_analyst_agent.agent import audit_log
 from data_analyst_agent.agent.generate_sql import VIEWS, GeneratedSql, generate_sql
 from data_analyst_agent.data.ingest import DEFAULT_DB_PATH
 from data_analyst_agent.data.metrics import METRICS
+from data_analyst_agent.models.entities import ConversationMemory, ConversationTurn
 
 _DEFAULT_DB_PATH = Path(os.environ.get("DUCKDB_PATH", str(DEFAULT_DB_PATH)))
 
@@ -167,3 +168,39 @@ def test_response_format_is_generated_sql_model():
 def _captured_system_message(fake_client: _FakeClient) -> str:
     kwargs = fake_client.chat.completions.captured_kwargs
     return next(m["content"] for m in kwargs["messages"] if m["role"] == "system")
+
+
+def test_no_conversation_memory_omits_conversation_section_entirely():
+    # The real regression guard for existing single-turn callers (including
+    # the eval harness, which never passes conversation_memory): the
+    # rendered *block* must be completely absent, not present-but-empty.
+    # Checking for "Conversation so far" alone isn't discriminating enough -
+    # the domain-knowledge rule itself now refers to that section by name -
+    # so this checks for build_context_block's own framing text instead,
+    # which only appears when it actually renders a populated block.
+    fake_client = _FakeClient()
+    generate_sql("How many orders are there?", prior_error=None, client=fake_client)
+    system_message = _captured_system_message(fake_client)
+    assert "for reference only" not in system_message
+    assert "log of prior questions and answers" not in system_message
+
+
+def test_conversation_memory_appears_in_the_system_prompt_when_given():
+    fake_client = _FakeClient()
+    memory = ConversationMemory(
+        summary="Earlier, UK revenue for Q3 2011 was discussed.",
+        recent_turns=[
+            ConversationTurn(
+                question="What was Q3 2011 UK revenue?",
+                sql="SELECT SUM(net_revenue) FROM v_orders",
+                answer_text="Q3 2011 UK revenue was £1.2M.",
+            )
+        ],
+    )
+    generate_sql(
+        "What about Germany?", prior_error=None, client=fake_client, conversation_memory=memory
+    )
+    system_message = _captured_system_message(fake_client)
+    assert "Conversation so far" in system_message
+    assert "Q3 2011 UK revenue" in system_message
+    assert "£1.2M" in system_message

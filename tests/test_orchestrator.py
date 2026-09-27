@@ -12,6 +12,7 @@ from unittest.mock import patch
 from data_analyst_agent.agent.orchestrator import answer_question
 from data_analyst_agent.models.entities import (
     ColumnSpec,
+    ConversationMemory,
     FailureDiagnosis,
     NarrativeWrap,
     SessionState,
@@ -255,3 +256,106 @@ def test_query_audit_log_entry_count_matches_attempts_using_real_writer(
 
     lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == len(attempts)
+
+
+@patch("data_analyst_agent.agent.orchestrator.update_memory")
+@patch("data_analyst_agent.agent.orchestrator.log_attempt")
+@patch("data_analyst_agent.agent.orchestrator.log_failure")
+@patch("data_analyst_agent.agent.orchestrator.wrap")
+@patch("data_analyst_agent.agent.orchestrator.diagnose")
+@patch("data_analyst_agent.agent.orchestrator.run_turn_sql")
+def test_no_conversation_memory_never_calls_update_memory(
+    mock_run_turn_sql,
+    mock_diagnose,
+    mock_wrap,
+    mock_log_failure,
+    mock_log_attempt,
+    mock_update_memory,
+):
+    attempts = [_attempt()]
+    mock_run_turn_sql.return_value = SqlRetryOutcome(
+        status="success", result=_success_result(), attempts=attempts
+    )
+    mock_wrap.return_value = _NARRATIVE
+
+    answer_question("How many orders are there?", _session())
+
+    mock_update_memory.assert_not_called()
+
+
+@patch("data_analyst_agent.agent.orchestrator.update_memory")
+@patch("data_analyst_agent.agent.orchestrator.log_attempt")
+@patch("data_analyst_agent.agent.orchestrator.wrap")
+@patch("data_analyst_agent.agent.orchestrator.run_turn_sql")
+def test_success_updates_conversation_memory_with_the_real_sql_and_narrative(
+    mock_run_turn_sql, mock_wrap, mock_log_attempt, mock_update_memory
+):
+    attempts = [_attempt()]
+    mock_run_turn_sql.return_value = SqlRetryOutcome(
+        status="success", result=_success_result(), attempts=attempts
+    )
+    mock_wrap.return_value = _NARRATIVE
+    session = _session()
+    memory = ConversationMemory()
+
+    answer_question("How many orders are there?", session, conversation_memory=memory)
+
+    mock_update_memory.assert_called_once()
+    args, kwargs = mock_update_memory.call_args
+    assert args[0] is memory
+    assert args[1] is session
+    assert kwargs["sql"] == attempts[-1].query_text
+    assert kwargs["answer_text"] == _NARRATIVE.answer_text
+
+
+@patch("data_analyst_agent.agent.orchestrator.update_memory")
+@patch("data_analyst_agent.agent.orchestrator.log_attempt")
+@patch("data_analyst_agent.agent.orchestrator.log_failure")
+@patch("data_analyst_agent.agent.orchestrator.diagnose")
+@patch("data_analyst_agent.agent.orchestrator.run_turn_sql")
+def test_graceful_failure_updates_conversation_memory_with_a_placeholder(
+    mock_run_turn_sql, mock_diagnose, mock_log_failure, mock_log_attempt, mock_update_memory
+):
+    attempts = [_attempt(attempt_number=n, status="error") for n in (1, 2, 3)]
+    mock_run_turn_sql.return_value = SqlRetryOutcome(
+        status="exhausted",
+        result=SqlExecutionResult(
+            status="error", error_message="boom", truncated=False, execution_ms=5
+        ),
+        attempts=attempts,
+    )
+    mock_diagnose.return_value = _DIAGNOSIS
+    memory = ConversationMemory()
+
+    answer_question("What's driving the change?", _session(), conversation_memory=memory)
+
+    mock_update_memory.assert_called_once()
+    _, kwargs = mock_update_memory.call_args
+    assert kwargs["sql"] is None
+    assert kwargs["answer_text"] == "(could not be answered)"
+
+
+@patch("data_analyst_agent.agent.orchestrator.check_cost_cap")
+@patch("data_analyst_agent.agent.orchestrator.update_memory")
+@patch("data_analyst_agent.agent.orchestrator.log_attempt")
+@patch("data_analyst_agent.agent.orchestrator.wrap")
+@patch("data_analyst_agent.agent.orchestrator.run_turn_sql")
+def test_cost_cap_tripped_by_the_summarization_call_overrides_success_to_budget_stop(
+    mock_run_turn_sql, mock_wrap, mock_log_attempt, mock_update_memory, mock_check_cost_cap
+):
+    attempts = [_attempt()]
+    mock_run_turn_sql.return_value = SqlRetryOutcome(
+        status="success", result=_success_result(), attempts=attempts
+    )
+    mock_wrap.return_value = _NARRATIVE
+    # First check (right after wrap()) passes; the second (right after
+    # update_memory, i.e. after the summarization call it might have made)
+    # is what catches the newly-tripped cap.
+    mock_check_cost_cap.side_effect = [False, True]
+
+    answer = answer_question(
+        "How many orders are there?", _session(), conversation_memory=ConversationMemory()
+    )
+
+    assert answer.status == "budget_stop"
+    mock_update_memory.assert_called_once()

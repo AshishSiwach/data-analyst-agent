@@ -49,6 +49,7 @@ from data_analyst_agent.agent.generate_sql import generate_sql
 from data_analyst_agent.agent.session import check_cost_cap, check_fast_fail, normalize
 from data_analyst_agent.db.run_sql import run_sql
 from data_analyst_agent.models.entities import (
+    ConversationMemory,
     SessionState,
     SqlAttempt,
     SqlExecutionResult,
@@ -71,6 +72,7 @@ def run_turn_sql(
     db_path: Path | str | None = None,
     client: OpenAI | None = None,
     llm_call_log_path: Path | str | None = None,
+    conversation_memory: ConversationMemory | None = None,
 ) -> SqlRetryOutcome:
     """Runs the bounded SQL-generation-and-execution loop for one turn.
     Mutates `session.failed_questions_cache` in place when a turn
@@ -96,6 +98,7 @@ def run_turn_sql(
             turn_id=resolved_turn_id,
             session_id=session.session_id,
             llm_call_log_path=llm_call_log_path,
+            conversation_memory=conversation_memory,
         )
 
         if check_cost_cap(session):

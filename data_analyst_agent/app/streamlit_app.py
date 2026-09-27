@@ -16,10 +16,12 @@ criterion.
 
 Chat *history* (the list of past question/answer pairs shown on screen)
 is a UI-only, display-purpose list - separate from `SessionState` and
-never fed back into `answer_question`. `_docs/scope.md`'s turn shape is
-explicit that each turn's `context` is empty in v1; this file honors
-that by calling `answer_question` with only the newly-typed question each
-time, never any prior conversation text.
+still never fed back into `answer_question`. What *is* now fed back
+(Phase 2 addition, see `_docs/phase2_memory.md`) is `ConversationMemory`,
+a separate object held in `st.session_state.memory` and passed to
+`answer_question` as `conversation_memory` - `answer_question` mutates it
+in place on a real (non-`budget_stop`) outcome, same as it already
+mutates `session`.
 
 Failure-UX detail, flagged rather than silently worked around: `Answer`
 (S01/S24) carries a `diagnosis` on graceful failure, but not the
@@ -47,7 +49,12 @@ from dotenv import load_dotenv
 from data_analyst_agent.agent.audit_log import QUERY_AUDIT_LOG_PATH
 from data_analyst_agent.agent.chart_select import render as render_chart
 from data_analyst_agent.agent.orchestrator import answer_question
-from data_analyst_agent.models.entities import Answer, QueryAuditLog, SessionState
+from data_analyst_agent.models.entities import (
+    Answer,
+    ConversationMemory,
+    QueryAuditLog,
+    SessionState,
+)
 
 load_dotenv()
 
@@ -91,6 +98,12 @@ def _get_history() -> list[tuple[str, Answer]]:
     if "history" not in st.session_state:
         st.session_state.history = []
     return st.session_state.history
+
+
+def _get_memory() -> ConversationMemory:
+    if "memory" not in st.session_state:
+        st.session_state.memory = ConversationMemory()
+    return st.session_state.memory
 
 
 def _render_success(answer: Answer) -> None:
@@ -168,6 +181,19 @@ def main() -> None:
 
     session = _get_session()
     history = _get_history()
+    memory = _get_memory()
+
+    with st.sidebar:
+        if st.button("Clear conversation"):
+            st.session_state.session = SessionState(
+                session_id=str(uuid.uuid4()),
+                started_at=datetime.now(timezone.utc),
+                cost_spent_usd=Decimal("0"),
+                cost_cap_usd=Decimal("0.50"),
+            )
+            st.session_state.history = []
+            st.session_state.memory = ConversationMemory()
+            st.rerun()
 
     for question, answer in history:
         with st.chat_message("user"):
@@ -181,7 +207,7 @@ def main() -> None:
             st.write(question)
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                answer = answer_question(question, session)
+                answer = answer_question(question, session, conversation_memory=memory)
             _render_answer(answer)
         history.append((question, answer))
 

@@ -13,6 +13,8 @@ from data_analyst_agent.models.entities import (
     Answer,
     ChartSpec,
     ColumnSpec,
+    ConversationMemory,
+    ConversationTurn,
     EvalResult,
     EvalRun,
     FailureDiagnosis,
@@ -173,6 +175,15 @@ MODEL_CASES = [
         ),
         "agent_sql",
     ),
+    (
+        ConversationTurn,
+        dict(
+            question="What was Q3 2011 UK revenue?",
+            sql="SELECT SUM(net_revenue) FROM v_orders WHERE country = 'United Kingdom'",
+            answer_text="Q3 2011 UK revenue was £1.2M.",
+        ),
+        "sql",
+    ),
 ]
 
 
@@ -306,3 +317,34 @@ def test_gold_question_non_graceful_failure_requires_gold_sql():
             bucket="basic",
             is_graceful_failure_case=False,
         )
+
+
+def test_conversation_memory_defaults_to_empty():
+    # Both fields are optional (no required field to drop, unlike the
+    # entities in MODEL_CASES above) - a fresh ConversationMemory is what
+    # every session starts with before any turn is added.
+    memory = ConversationMemory()
+    assert memory.summary is None
+    assert memory.recent_turns == []
+
+
+def test_conversation_memory_json_round_trip():
+    memory = ConversationMemory(
+        summary="The founder asked about UK revenue in Q3 2011.",
+        recent_turns=[
+            ConversationTurn(
+                question="What was Q3 2011 UK revenue?",
+                sql="SELECT SUM(net_revenue) FROM v_orders WHERE country = 'United Kingdom'",
+                answer_text="Q3 2011 UK revenue was £1.2M.",
+            )
+        ],
+    )
+    round_tripped = ConversationMemory.model_validate_json(memory.model_dump_json())
+    assert round_tripped == memory
+
+
+def test_conversation_turn_allows_null_sql_for_a_failed_turn():
+    turn = ConversationTurn(
+        question="What about last quarter?", sql=None, answer_text="(could not be answered)"
+    )
+    assert turn.sql is None

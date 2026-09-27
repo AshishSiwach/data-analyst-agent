@@ -14,6 +14,8 @@ Operational guide for anyone (human or agent) writing code in this repository. T
 
 If a task in `implementation_plan.md` appears to require contradicting any of docs 1–6, stop and flag it rather than resolving the conflict silently — these six are the approved design; the plan is the build order, not a second design authority.
 
+Docs 1–7 above describe locked v1, as shipped, and are left historically accurate rather than rewritten as later work builds on top of it. `phase2_memory.md` is a Phase 2 addendum layered on top of this locked design — it doesn't modify docs 1–7, it describes what's been added since.
+
 ## Repo layout
 
 ```
@@ -73,7 +75,7 @@ These come directly from `autonomy.md` and `Tools.md` and are the things most li
 - **Every SQL string reaches the database only through `db/sql_guard.py::validate()` first.** No code path calls DuckDB's execute directly with a string that hasn't passed `validate()`. `db/run_sql.py` is the only caller of the raw connection for LLM-generated queries.
 - **`run_sql`'s bounds are hardcoded, not configurable at the call site:** 5-second timeout, 10,000-row cap, `status` restricted to `success | error | timeout | rejected`. These numbers live in one place (`db/run_sql.py`) — don't duplicate the literals elsewhere.
 - **The retry loop (`agent/retry_loop.py`) hard-caps at 3 attempts via a counter, never a model-negotiated decision.** The model can be told it failed and asked to retry; it cannot be given a way to ask for a 4th attempt.
-- **The session cost cap is checked after every LLM-invoking call** — every `generate_sql` attempt and every `narrative.wrap` call, not once per turn. Implement this as one function (`agent/session.py::check_cost_cap`) called from both sites, not two copies of the same check.
+- **The session cost cap is checked after every LLM-invoking call** — every `generate_sql` attempt, every `narrative.wrap` call, and (since the Phase 2 conversation-memory addition — see `phase2_memory.md`) every summarization call inside `agent/conversation_memory.py::update_memory`, not once per turn. Implement this as one function (`agent/session.py::check_cost_cap`) called from every site, not a separate copy of the same check per call.
 - **Exactly one agent-invoked tool exists: `run_sql`.** Do not add a second dynamically-invoked tool (e.g. reintroducing `list_metrics` or `plot_chart` as model-callable) without first updating `Tools.md` and `Architecture.md` — that would reopen a locked design decision, not just add a feature.
 - **`agent/chart_select.py`'s type decision is a pure function of result shape.** No LLM call anywhere in this module.
 - **`agent/narrative.py`'s output must never contain a number, trend, or comparison absent from the `SqlAttempt` result it was given.** Any change to this module's prompt or post-processing must keep this checkable: tests should extract every numeral from `answer_text` and assert each one traces back to a value in the result set.

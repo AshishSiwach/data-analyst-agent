@@ -49,16 +49,20 @@ from openai import OpenAI
 
 from data_analyst_agent.agent.audit_log import log_attempt, log_failure
 from data_analyst_agent.agent.chart_select import build_chart_spec
+from data_analyst_agent.agent.conversation_memory import update_memory
 from data_analyst_agent.agent.diagnosis import diagnose
 from data_analyst_agent.agent.narrative import wrap
 from data_analyst_agent.agent.retry_loop import run_turn_sql
 from data_analyst_agent.agent.session import check_cost_cap
 from data_analyst_agent.models.entities import (
     Answer,
+    ConversationMemory,
     FailureLogEntry,
     ResultData,
     SessionState,
 )
+
+_FAILED_TURN_PLACEHOLDER = "(could not be answered)"
 
 _GRACEFUL_FAILURE_STATUSES = frozenset({"declined", "exhausted", "fast_fail"})
 
@@ -71,13 +75,22 @@ def answer_question(
     query_audit_log_path: Path | str | None = None,
     failure_log_path: Path | str | None = None,
     llm_call_log_path: Path | str | None = None,
+    conversation_memory: ConversationMemory | None = None,
 ) -> Answer:
     """Runs one full turn end to end and returns the `Answer` the UI
     renders. Mutates `session` in place: appends `turn_id` to
     `session.turn_ids` (this is the whole-turn lifecycle concern
     `run_turn_sql` explicitly leaves to its caller), and `run_turn_sql`
     itself already mutates `session.failed_questions_cache` on exhaustion
-    or decline.
+    or decline. When given, also mutates `conversation_memory` in place on
+    a success or graceful-failure outcome (never on `budget_stop`, since a
+    turn that spent nothing produced nothing worth remembering either) -
+    see `agent/conversation_memory.py`. Kept inside this function rather
+    than left to the caller specifically because this is "the only module
+    that sees every LLM-invoking call in a turn" (see the module docstring
+    above) - the summarization call `update_memory` can make is checked
+    against the cost cap at the same site as every other LLM-invoking call
+    in this function, not from a fourth, uncovered call site.
     """
     turn_id = str(uuid.uuid4())
     session.turn_ids.append(turn_id)
@@ -89,6 +102,7 @@ def answer_question(
         db_path=db_path,
         client=client,
         llm_call_log_path=llm_call_log_path,
+        conversation_memory=conversation_memory,
     )
 
     for attempt in outcome.attempts:
@@ -119,6 +133,20 @@ def answer_question(
             ),
             path=failure_log_path,
         )
+        if conversation_memory is not None:
+            update_memory(
+                conversation_memory,
+                session,
+                question,
+                sql=None,
+                answer_text=_FAILED_TURN_PLACEHOLDER,
+                client=client,
+                turn_id=turn_id,
+                session_id=session.session_id,
+                llm_call_log_path=llm_call_log_path,
+            )
+            if check_cost_cap(session):
+                return Answer(turn_id=turn_id, status="budget_stop")
         return Answer(turn_id=turn_id, status="graceful_failure", diagnosis=diagnosis)
 
     # outcome.status == "success"
@@ -138,13 +166,29 @@ def answer_question(
     if check_cost_cap(session):
         return Answer(turn_id=turn_id, status="budget_stop")
 
+    sql_shown = outcome.attempts[-1].query_text
+    if conversation_memory is not None:
+        update_memory(
+            conversation_memory,
+            session,
+            question,
+            sql=sql_shown,
+            answer_text=narrative.answer_text,
+            client=client,
+            turn_id=turn_id,
+            session_id=session.session_id,
+            llm_call_log_path=llm_call_log_path,
+        )
+        if check_cost_cap(session):
+            return Answer(turn_id=turn_id, status="budget_stop")
+
     return Answer(
         turn_id=turn_id,
         status="success",
         answer_text=narrative.answer_text,
         assumption_disclosed=narrative.assumption_disclosed,
         chart_spec=chart_spec,
-        sql_shown=outcome.attempts[-1].query_text,
+        sql_shown=sql_shown,
     )
 
 

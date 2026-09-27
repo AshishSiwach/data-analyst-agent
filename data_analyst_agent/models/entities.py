@@ -26,7 +26,7 @@ AnswerStatus = Literal["success", "graceful_failure", "budget_stop"]
 MetricUnit = Literal["currency", "count", "percentage", "rank"]
 MetricDirection = Literal["asc", "desc"]
 GoldBucket = Literal["basic", "semantic", "adversarial"]
-LlmCallType = Literal["generate_sql", "narrative", "diagnosis"]
+LlmCallType = Literal["generate_sql", "narrative", "diagnosis", "summarize_context"]
 
 
 class ColumnSpec(BaseModel):
@@ -274,6 +274,30 @@ class SessionState(BaseModel):
     cost_cap_usd: Decimal = Decimal("0.50")
     turn_ids: list[str] = Field(default_factory=list)
     failed_questions_cache: dict[str, int] = Field(default_factory=dict)
+
+
+class ConversationTurn(BaseModel):
+    """One past turn kept verbatim in a `ConversationMemory`'s sliding
+    window. `sql` is null for a turn that couldn't be answered - the
+    placeholder in `answer_text` (e.g. "(could not be answered)") is what
+    keeps a failed turn from vanishing from context entirely, rather than
+    storing its full failure detail."""
+
+    question: str
+    sql: str | None
+    answer_text: str
+
+
+class ConversationMemory(BaseModel):
+    """Post-v1 addition (see `_docs/phase2_memory.md`) - deliberately kept
+    separate from `SessionState` rather than added to it, so `SessionState`
+    still holds exactly the six fields `CLAUDE.md`'s structural rule
+    specifies. `recent_turns` is the sliding window (bounded by
+    `agent/conversation_memory.py::WINDOW_SIZE`); `summary` is the rolling
+    summary of whatever has aged out of that window."""
+
+    summary: str | None = None
+    recent_turns: list[ConversationTurn] = Field(default_factory=list)
 
 
 class QueryAuditLog(BaseModel):
