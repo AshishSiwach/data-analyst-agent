@@ -64,7 +64,9 @@ def _graceful_failure_question(question_id: str) -> GoldQuestion:
 def test_agent_that_always_succeeds_on_attempt_one_produces_full_accuracy_and_a_1s_histogram(
     mock_run_turn_sql, mock_wrap, tmp_path
 ):
-    def run_turn_sql_side_effect(question, session, turn_id=None, db_path=None, client=None):
+    def run_turn_sql_side_effect(
+        question, session, turn_id=None, db_path=None, client=None, **kwargs
+    ):
         attempt = SqlAttempt(
             turn_id=turn_id,
             attempt_number=1,
@@ -107,7 +109,9 @@ def test_agent_that_always_succeeds_on_attempt_one_produces_full_accuracy_and_a_
 def test_agent_that_always_exhausts_produces_zero_accuracy_and_populated_gf_rate(
     mock_run_turn_sql, mock_diagnose, tmp_path
 ):
-    def run_turn_sql_side_effect(question, session, turn_id=None, db_path=None, client=None):
+    def run_turn_sql_side_effect(
+        question, session, turn_id=None, db_path=None, client=None, **kwargs
+    ):
         attempts = [
             SqlAttempt(
                 turn_id=turn_id,
@@ -164,7 +168,9 @@ def test_a_wrong_but_successfully_executed_answer_still_counts_in_the_attempts_h
     # was gated on eval-graded `passed` rather than on the retry loop's
     # own "did it execute" success signal. This is a distinct failure
     # mode from "never got a working query" and must still show up here.
-    def run_turn_sql_side_effect(question, session, turn_id=None, db_path=None, client=None):
+    def run_turn_sql_side_effect(
+        question, session, turn_id=None, db_path=None, client=None, **kwargs
+    ):
         attempt = SqlAttempt(
             turn_id=turn_id,
             attempt_number=1,

@@ -8,11 +8,20 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from data_analyst_agent.agent import audit_log
 from data_analyst_agent.agent.diagnosis import diagnose
 from data_analyst_agent.data.ingest import DEFAULT_DB_PATH
 from data_analyst_agent.models.entities import FailureDiagnosis, SqlAttempt
 
 _DEFAULT_DB_PATH = Path(os.environ.get("DUCKDB_PATH", str(DEFAULT_DB_PATH)))
+
+
+@pytest.fixture(autouse=True)
+def _llm_call_log_to_tmp(tmp_path, monkeypatch):
+    # diagnose() now logs every call to llm_calls.jsonl (monitoring
+    # dashboard); redirect the default path so these tests don't append to
+    # the real repo-root file every time the suite runs.
+    monkeypatch.setattr(audit_log, "LLM_CALL_LOG_PATH", tmp_path / "llm_calls.jsonl")
 
 
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
@@ -51,6 +60,12 @@ def _attempt(**overrides) -> SqlAttempt:
     return SqlAttempt(**base)
 
 
+class _FakeUsage:
+    def __init__(self, prompt_tokens: int = 100, completion_tokens: int = 20):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
 class _FakeMessage:
     def __init__(self, parsed):
         self.parsed = parsed
@@ -64,6 +79,7 @@ class _FakeChoice:
 class _FakeCompletion:
     def __init__(self, parsed):
         self.choices = [_FakeChoice(parsed)]
+        self.usage = _FakeUsage()
 
 
 class _FakeCompletionsAPI:

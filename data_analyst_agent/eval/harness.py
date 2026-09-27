@@ -244,10 +244,12 @@ def run_harness(
     out_path.mkdir(parents=True, exist_ok=True)
     audit_log_path = out_path / "eval_query_audit.jsonl"
     failure_log_path = out_path / "eval_failures.jsonl"
+    llm_call_log_path = out_path / "eval_llm_calls.jsonl"
     # Start each run with a clean audit trail so attempts_used counts
     # aren't contaminated by entries an earlier run appended.
     audit_log_path.unlink(missing_ok=True)
     failure_log_path.unlink(missing_ok=True)
+    llm_call_log_path.unlink(missing_ok=True)
 
     results: list[EvalResult] = []
     for question in questions:
@@ -264,6 +266,7 @@ def run_harness(
             client=client,
             query_audit_log_path=audit_log_path,
             failure_log_path=failure_log_path,
+            llm_call_log_path=llm_call_log_path,
         )
         records = _attempt_records_for_turn(audit_log_path, answer.turn_id)
         attempts_used = len(records)

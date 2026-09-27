@@ -34,10 +34,12 @@ editable domain knowledge, so they're kept in code deliberately.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from openai import OpenAI
 
+from data_analyst_agent.agent.audit_log import log_llm_call
 from data_analyst_agent.data.metrics import get_metrics
 from data_analyst_agent.db.connection import get_connection
 from data_analyst_agent.models.entities import GeneratedSql
@@ -121,6 +123,9 @@ def generate_sql(
     prior_error: str | None,
     db_path: Path | str | None = None,
     client: OpenAI | None = None,
+    turn_id: str | None = None,
+    session_id: str | None = None,
+    llm_call_log_path: Path | str | None = None,
 ) -> GeneratedSql:
     """Turns `question` into a candidate SQL query - or, if the model
     judges the question unanswerable from the schema, a declined result
@@ -145,6 +150,7 @@ def generate_sql(
             "trying yet another query."
         )
 
+    start = time.monotonic()
     completion = active_client.chat.completions.parse(
         model=MODEL,
         temperature=0,
@@ -153,6 +159,17 @@ def generate_sql(
             {"role": "user", "content": user_content},
         ],
         response_format=GeneratedSql,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    log_llm_call(
+        call_type="generate_sql",
+        model=MODEL,
+        prompt_tokens=completion.usage.prompt_tokens,
+        completion_tokens=completion.usage.completion_tokens,
+        latency_ms=latency_ms,
+        turn_id=turn_id,
+        session_id=session_id,
+        path=llm_call_log_path,
     )
     return completion.choices[0].message.parsed
 

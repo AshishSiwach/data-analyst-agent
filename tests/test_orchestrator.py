@@ -215,7 +215,7 @@ def test_budget_stop_after_a_successful_query_but_over_cap_during_wrap(
         status="success", result=_success_result(), attempts=attempts
     )
 
-    def wrap_side_effect(question, result, chart_spec, client=None):
+    def wrap_side_effect(question, result, chart_spec, client=None, **kwargs):
         session.cost_spent_usd = Decimal("0.60")
         return _NARRATIVE
 

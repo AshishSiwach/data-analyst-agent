@@ -100,7 +100,7 @@ def test_fast_fail_short_circuits_to_zero_new_attempts(mock_gen, mock_run):
 def test_cost_cap_exceeded_after_attempt_one_halts_before_attempt_two(mock_gen, mock_run):
     session = _session(cost_spent_usd=Decimal("0.00"), cost_cap_usd=Decimal("0.50"))
 
-    def generate_side_effect(question, prior_error, db_path=None, client=None):
+    def generate_side_effect(question, prior_error, db_path=None, client=None, **kwargs):
         # Simulate attempt 1's generate_sql call being the one that
         # tips the session over budget (checked right after this call,
         # per Architecture.md's GenSQL -> CostCheck1 order).

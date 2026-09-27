@@ -79,6 +79,31 @@ A few things it handles so grading stays fair:
 
 [`eval/harness.py`](data_analyst_agent/eval/harness.py) runs all 60 questions through the real agent, never a mock, and reports per-bucket accuracy, how many attempts each question needed, and the graceful failure rate. Every report is stamped with the commit and prompt hash it was generated from.
 
+## Testing
+
+Separate from the eval harness above: 254 pytest tests across the codebase, everything mocked at the LLM boundary so the suite runs in about two minutes with no API key and no network access.
+
+```bash
+uv run pytest -q
+uv run ruff check . && uv run ruff format --check .
+```
+
+Both run automatically on every push and pull request (see [CI](#ci) below). A few tests do need the real database to already exist (schema introspection reads the live views), and skip with a clear message rather than failing if it isn't there yet - the `data_analyst_agent.duckdb` committed in this repo already satisfies them.
+
+## Monitoring
+
+The agent writes three append-only JSONL logs unconditionally, independent of the eval harness: `query_audit.jsonl` (every SQL attempt, success or failure), `failures.jsonl` (turns that exhausted all three attempts), and `llm_calls.jsonl` (every LLM call, with token counts, cost, and latency). None of this needs a database or an external service to produce, per the project's "no Redis/Postgres/Grafana in v1" call in [`_docs/technology_stack.md`](_docs/technology_stack.md) - it's just structured logging, one line per event.
+
+A local, operator-only dashboard reads those three files directly and renders them:
+
+```bash
+uv run streamlit run data_analyst_agent/app/dashboard.py
+```
+
+It shows success/error/validation-failure rates, query execution time and model response time, request volume and attempts-per-turn distribution, token usage and cost (broken down by day and by call type), and a diagnosis-category breakdown for failed turns. It's deliberately not part of the public Streamlit Community Cloud deployment - these logs can contain error text and per-call cost, which has no reason to be public, and running it separately means never having to think about that.
+
+One KPI I considered and dropped: concurrent users. This app has no login and no per-user identity, so there's no "user" for a session to actually belong to - showing it would just be a relabeled request-volume chart under a misleading name.
+
 ## What failures.jsonl taught me
 
 Every turn that burns through all three attempts and still fails gets logged to `failures.jsonl`, separately from the gold-set harness. It's an honest record of everything that actually went wrong during development, and rereading it was more useful than I expected.
@@ -154,7 +179,7 @@ OpenAI GPT-4o-mini for structured outputs (no agent framework), DuckDB as a read
 
 ## CI
 
-Every push and pull request against `main` runs two jobs in [GitHub Actions](.github/workflows/ci.yml): one installs the project with `uv` and runs `ruff check` plus `ruff format --check`, the other runs the full pytest suite (251 tests, all mocked at the LLM boundary so no API key or network access is needed to pass). Neither job needs a secret, since the tests skip anything that needs the real database only if it isn't there, and the database committed in this repo already satisfies them.
+Every push and pull request against `main` runs two jobs in [GitHub Actions](.github/workflows/ci.yml): one installs the project with `uv` and runs `ruff check` plus `ruff format --check`, the other runs the full pytest suite (254 tests, all mocked at the LLM boundary so no API key or network access is needed to pass). Neither job needs a secret, since the tests skip anything that needs the real database only if it isn't there, and the database committed in this repo already satisfies them.
 
 The 60-question eval harness deliberately isn't part of this. It's a real, paid GPT-4o-mini call per question and isn't seeded, so running it on every push would cost money and produce a noisy, flaky-looking check for a point or two of natural run-to-run drift. It stays a manual, deliberate step (see [Results](#results-from-the-last-full-run)), not a merge gate. There's no deployment step either: the Streamlit Community Cloud app redeploys itself automatically on every push to `main`, so there's nothing for a workflow to trigger.
 

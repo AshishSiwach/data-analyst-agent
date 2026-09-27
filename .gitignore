@@ -15,6 +15,7 @@ venv/
 *.db
 failures.jsonl
 query_audit.jsonl
+llm_calls.jsonl
 report/
 
 # Exception: the built database at repo root is committed as a deployment

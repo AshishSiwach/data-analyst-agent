@@ -14,10 +14,12 @@ There are no result rows to reference, because every attempt failed.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from openai import OpenAI
 
+from data_analyst_agent.agent.audit_log import log_llm_call
 from data_analyst_agent.agent.generate_sql import build_schema_summary
 from data_analyst_agent.models.entities import FailureDiagnosis, SqlAttempt
 
@@ -71,11 +73,15 @@ def diagnose(
     attempts: list[SqlAttempt],
     db_path: Path | str | None = None,
     client: OpenAI | None = None,
+    turn_id: str | None = None,
+    session_id: str | None = None,
+    llm_call_log_path: Path | str | None = None,
 ) -> FailureDiagnosis:
     active_client = client if client is not None else OpenAI()
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(schema_summary=build_schema_summary(db_path))
     user_content = f"Question: {question}\n\nAttempt trace:\n{_format_trace(attempts)}"
 
+    start = time.monotonic()
     completion = active_client.chat.completions.parse(
         model=MODEL,
         temperature=0,
@@ -84,5 +90,16 @@ def diagnose(
             {"role": "user", "content": user_content},
         ],
         response_format=FailureDiagnosis,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    log_llm_call(
+        call_type="diagnosis",
+        model=MODEL,
+        prompt_tokens=completion.usage.prompt_tokens,
+        completion_tokens=completion.usage.completion_tokens,
+        latency_ms=latency_ms,
+        turn_id=turn_id,
+        session_id=session_id,
+        path=llm_call_log_path,
     )
     return completion.choices[0].message.parsed

@@ -20,12 +20,15 @@ rows-and-columns object "sql_attempt" would be actively misleading).
 from __future__ import annotations
 
 import re
+import time
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from openai import OpenAI
 from pydantic import BaseModel
 
+from data_analyst_agent.agent.audit_log import log_llm_call
 from data_analyst_agent.models.entities import ChartSpec, NarrativeWrap, SqlExecutionResult
 
 MODEL = "gpt-4o-mini"
@@ -65,6 +68,9 @@ def wrap(
     result: SqlExecutionResult,
     chart_spec: ChartSpec,
     client: OpenAI | None = None,
+    turn_id: str | None = None,
+    session_id: str | None = None,
+    llm_call_log_path: Path | str | None = None,
 ) -> NarrativeWrap:
     if result.status != "success":
         raise ValueError("wrap() requires a successful SqlExecutionResult")
@@ -72,6 +78,7 @@ def wrap(
     active_client = client if client is not None else OpenAI()
     user_content = _build_user_content(question, result, chart_spec)
 
+    start = time.monotonic()
     completion = active_client.chat.completions.parse(
         model=MODEL,
         temperature=0,
@@ -80,6 +87,17 @@ def wrap(
             {"role": "user", "content": user_content},
         ],
         response_format=_NarrativeCompletion,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    log_llm_call(
+        call_type="narrative",
+        model=MODEL,
+        prompt_tokens=completion.usage.prompt_tokens,
+        completion_tokens=completion.usage.completion_tokens,
+        latency_ms=latency_ms,
+        turn_id=turn_id,
+        session_id=session_id,
+        path=llm_call_log_path,
     )
     parsed = completion.choices[0].message.parsed
 

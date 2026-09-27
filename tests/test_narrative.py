@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import pytest
 
+from data_analyst_agent.agent import audit_log
 from data_analyst_agent.agent.narrative import NarrativeGuardrailViolation, wrap
 from data_analyst_agent.models.entities import ChartSpec, ColumnSpec, SqlExecutionResult
+
+
+@pytest.fixture(autouse=True)
+def _llm_call_log_to_tmp(tmp_path, monkeypatch):
+    # wrap() now logs every call to llm_calls.jsonl (monitoring dashboard);
+    # redirect the default path so these tests don't append to the real
+    # repo-root file every time the suite runs.
+    monkeypatch.setattr(audit_log, "LLM_CALL_LOG_PATH", tmp_path / "llm_calls.jsonl")
 
 
 def _result(**overrides) -> SqlExecutionResult:
@@ -27,6 +36,12 @@ def _chart_spec(**overrides) -> ChartSpec:
     return ChartSpec(**base)
 
 
+class _FakeUsage:
+    def __init__(self, prompt_tokens: int = 100, completion_tokens: int = 20):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
 class _FakeMessage:
     def __init__(self, parsed):
         self.parsed = parsed
@@ -40,6 +55,7 @@ class _FakeChoice:
 class _FakeCompletion:
     def __init__(self, parsed):
         self.choices = [_FakeChoice(parsed)]
+        self.usage = _FakeUsage()
 
 
 class _FakeCompletionsAPI:

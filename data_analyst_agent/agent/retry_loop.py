@@ -26,10 +26,14 @@ success) than recognize a genuine schema gap.
 
 Not this module's job (left to S24's orchestrator, which is the layer
 that sees every LLM-invoking call in a turn, not just this one):
-- Incrementing `session.cost_spent_usd` from actual API usage - S19's
-  `generate_sql` doesn't currently expose token/cost data, and cost
-  tracking needs to span `generate_sql` *and* `narrative.wrap` (S22),
-  which this loop never calls.
+- Incrementing `session.cost_spent_usd` from actual API usage. Post-v1,
+  `generate_sql` (and `narrative.wrap`/`diagnose`) now log real token
+  counts and cost to `llm_calls.jsonl` for the monitoring dashboard (see
+  `agent/audit_log.py::log_llm_call`), but that's a fire-and-forget side
+  log, not a return value this loop could feed into `session.cost_spent_usd`
+  even if it wanted to - and cost tracking still needs to span
+  `narrative.wrap` too, which this loop never calls. Still an open gap,
+  not this loop's job to close.
 - Appending the turn to `session.turn_ids` - a whole-turn lifecycle
   concern, not specific to the SQL-retry sub-loop.
 """
@@ -66,6 +70,7 @@ def run_turn_sql(
     turn_id: str | None = None,
     db_path: Path | str | None = None,
     client: OpenAI | None = None,
+    llm_call_log_path: Path | str | None = None,
 ) -> SqlRetryOutcome:
     """Runs the bounded SQL-generation-and-execution loop for one turn.
     Mutates `session.failed_questions_cache` in place when a turn
@@ -83,7 +88,15 @@ def run_turn_sql(
     result: SqlExecutionResult | None = None
 
     for attempt_number in range(1, MAX_ATTEMPTS + 1):
-        generated = generate_sql(question, prior_error=prior_error, db_path=db_path, client=client)
+        generated = generate_sql(
+            question,
+            prior_error=prior_error,
+            db_path=db_path,
+            client=client,
+            turn_id=resolved_turn_id,
+            session_id=session.session_id,
+            llm_call_log_path=llm_call_log_path,
+        )
 
         if check_cost_cap(session):
             return SqlRetryOutcome(status="budget_stop", attempts=attempts)

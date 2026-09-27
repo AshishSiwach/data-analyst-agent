@@ -20,19 +20,23 @@ verified empirically in the post-S23 `can_answer_from_schema` fix: calling
 `diagnose()` on a `declined` outcome's single `rejected` attempt produces
 the correct category 7/7 times against S18's gold `expected_failure_category`.
 
-Flagged gap, not silently resolved: `session.cost_spent_usd` is never
-incremented anywhere in the codebase from real OpenAI usage.
-`scope.md` says the cost cap is "tracked at the LLM call layer," but
-`generate_sql`/`narrative.wrap`/`diagnose` (S19/S22/S23) don't expose
-token/cost data from their `completion.usage` - only the parsed pydantic
-model. Wiring real per-call cost accounting would mean changing those
-three "done" slices' OpenAI call sites, which is beyond this slice's
-declared file scope (`agent/orchestrator.py` only per
-`implementation_plan.md`). The `budget_stop` path itself is fully correct
-and reachable (proven by this slice's own mocked tests, which set
-`session.cost_spent_usd` directly, exactly as S20's retry-loop tests
-already did) - it just will not trigger organically in a live run until a
-later slice adds real cost metering. Left for a future slice to pick up.
+Flagged gap, partially resolved, not silently closed: `session.cost_spent_usd`
+is still never incremented anywhere in the codebase from real OpenAI usage.
+`scope.md` says the cost cap is "tracked at the LLM call layer." Post-v1,
+for the monitoring dashboard, `generate_sql`/`narrative.wrap`/`diagnose`
+were changed to capture real `completion.usage` and log it (token counts,
+cost, latency) to `llm_calls.jsonl` unconditionally - see
+`agent/audit_log.py::log_llm_call`. That log is fire-and-forget, though,
+not a return value any of the three functions hand back to their caller,
+so it does not by itself feed `session.cost_spent_usd` - wiring that
+still means deciding how a live-session cost figure should be accumulated
+across a turn (this module) and fed back into `SessionState`, which is a
+distinct, still-open piece of work, deliberately not bundled into the
+monitoring-dashboard change that added the underlying data. The
+`budget_stop` path itself is fully correct and reachable (proven by this
+slice's own mocked tests, which set `session.cost_spent_usd` directly,
+exactly as S20's retry-loop tests already did) - it just will not trigger
+organically in a live run until that remaining wiring is done.
 """
 
 from __future__ import annotations
@@ -66,6 +70,7 @@ def answer_question(
     client: OpenAI | None = None,
     query_audit_log_path: Path | str | None = None,
     failure_log_path: Path | str | None = None,
+    llm_call_log_path: Path | str | None = None,
 ) -> Answer:
     """Runs one full turn end to end and returns the `Answer` the UI
     renders. Mutates `session` in place: appends `turn_id` to
@@ -77,7 +82,14 @@ def answer_question(
     turn_id = str(uuid.uuid4())
     session.turn_ids.append(turn_id)
 
-    outcome = run_turn_sql(question, session, turn_id=turn_id, db_path=db_path, client=client)
+    outcome = run_turn_sql(
+        question,
+        session,
+        turn_id=turn_id,
+        db_path=db_path,
+        client=client,
+        llm_call_log_path=llm_call_log_path,
+    )
 
     for attempt in outcome.attempts:
         log_attempt(attempt, session_id=session.session_id, path=query_audit_log_path)
@@ -86,7 +98,15 @@ def answer_question(
         return Answer(turn_id=turn_id, status="budget_stop")
 
     if outcome.status in _GRACEFUL_FAILURE_STATUSES:
-        diagnosis = diagnose(question, outcome.attempts, db_path=db_path, client=client)
+        diagnosis = diagnose(
+            question,
+            outcome.attempts,
+            db_path=db_path,
+            client=client,
+            turn_id=turn_id,
+            session_id=session.session_id,
+            llm_call_log_path=llm_call_log_path,
+        )
         log_failure(
             FailureLogEntry(
                 turn_id=turn_id,
@@ -105,7 +125,15 @@ def answer_question(
     result = outcome.result
     result_data = ResultData(columns=result.columns, rows=result.rows)
     chart_spec = build_chart_spec(result_data)
-    narrative = wrap(question, result, chart_spec, client=client)
+    narrative = wrap(
+        question,
+        result,
+        chart_spec,
+        client=client,
+        turn_id=turn_id,
+        session_id=session.session_id,
+        llm_call_log_path=llm_call_log_path,
+    )
 
     if check_cost_cap(session):
         return Answer(turn_id=turn_id, status="budget_stop")

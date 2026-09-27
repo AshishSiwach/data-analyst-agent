@@ -192,6 +192,15 @@ erDiagram
 
 ---
 
+## Monitoring (added post-v1, not part of S01's original entity list)
+
+**`LlmCallLog`** (`llm_calls.jsonl`) — one entry per LLM call (`generate_sql`/`narrative`/`diagnosis`), written unconditionally by the call site itself, independent of `QueryAuditLog`. Backs the local monitoring dashboard (`app/dashboard.py`) added after v1 shipped - not one of the eleven entities S01 names, so it lives in its own section here rather than being folded into Layer 2 above.
+- `call_type, model, turn_id (nullable), session_id (nullable), prompt_tokens, completion_tokens, cost_usd, latency_ms, logged_at`
+- `turn_id`/`session_id` are nullable because these three functions are also called directly (tests, smoke tests, the eval harness) without a turn in progress.
+- Cost is computed at write time from GPT-4o-mini's published per-token rate ($0.15/1M input, $0.60/1M output as of September 2026), not read back from the OpenAI API - update `agent/audit_log.py`'s two rate constants if pricing changes.
+
+---
+
 ## Layer 3 — Evaluation data (offline, build-time, versioned in git — never touched at runtime)
 
 **`GoldQuestion`** (`gold.jsonl`) — the 60 hand-crafted triples from `scope.md`.

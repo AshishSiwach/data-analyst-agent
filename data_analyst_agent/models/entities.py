@@ -5,6 +5,10 @@ FailureDiagnosis, Answer, SessionState, QueryAuditLog, FailureLogEntry,
 MetricDefinition, GoldQuestion, EvalRun, EvalResult. `Question` is defined
 in InformationModel.md's Layer 2 diagram but is not in that list, so it is
 deliberately not modeled here.
+
+`LlmCallLog` is a twelfth entity, added later for the monitoring
+dashboard (post-v1, not part of any S01-S30 slice) - see
+InformationModel.md's "Monitoring" section.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ AnswerStatus = Literal["success", "graceful_failure", "budget_stop"]
 MetricUnit = Literal["currency", "count", "percentage", "rank"]
 MetricDirection = Literal["asc", "desc"]
 GoldBucket = Literal["basic", "semantic", "adversarial"]
+LlmCallType = Literal["generate_sql", "narrative", "diagnosis"]
 
 
 class ColumnSpec(BaseModel):
@@ -282,6 +287,30 @@ class QueryAuditLog(BaseModel):
     execution_ms: int
     row_count: int | None = None
     error_message: str | None = None
+    logged_at: datetime
+
+
+class LlmCallLog(BaseModel):
+    """One entry per LLM call (generate_sql/narrative/diagnosis), written
+    unconditionally, independent of QueryAuditLog. Added post-v1 for the
+    monitoring dashboard - not one of S01's original eleven entities, so it
+    is documented separately in InformationModel.md's "Monitoring" section
+    rather than folded into that original list.
+
+    `turn_id`/`session_id` are optional because these functions are also
+    called directly (tests, the eval harness, ad-hoc smoke tests) without a
+    turn in progress; a call made outside a real turn is still worth
+    logging, just without that correlation.
+    """
+
+    call_type: LlmCallType
+    model: str
+    turn_id: str | None = None
+    session_id: str | None = None
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: Decimal
+    latency_ms: int
     logged_at: datetime
 
 

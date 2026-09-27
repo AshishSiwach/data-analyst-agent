@@ -1,14 +1,22 @@
-"""S05 acceptance tests for agent.audit_log: log_attempt, log_failure."""
+"""S05 acceptance tests for agent.audit_log: log_attempt, log_failure.
+Also covers the later monitoring-dashboard addition, log_llm_call."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 
-from data_analyst_agent.agent.audit_log import log_attempt, log_failure
+from data_analyst_agent.agent.audit_log import (
+    compute_cost_usd,
+    log_attempt,
+    log_failure,
+    log_llm_call,
+)
 from data_analyst_agent.models.entities import (
     FailureDiagnosis,
     FailureLogEntry,
+    LlmCallLog,
     QueryAuditLog,
     SqlAttempt,
 )
@@ -129,7 +137,63 @@ def test_every_written_line_is_a_single_complete_valid_json_object_never_partial
 
 
 def test_default_paths_are_the_fixed_repo_root_filenames():
-    from data_analyst_agent.agent.audit_log import FAILURE_LOG_PATH, QUERY_AUDIT_LOG_PATH
+    from data_analyst_agent.agent.audit_log import (
+        FAILURE_LOG_PATH,
+        LLM_CALL_LOG_PATH,
+        QUERY_AUDIT_LOG_PATH,
+    )
 
     assert str(QUERY_AUDIT_LOG_PATH) == "query_audit.jsonl"
     assert str(FAILURE_LOG_PATH) == "failures.jsonl"
+    assert str(LLM_CALL_LOG_PATH) == "llm_calls.jsonl"
+
+
+def test_compute_cost_usd_uses_gpt_4o_mini_input_and_output_rates():
+    # 1M input tokens at $0.15/1M, 1M output tokens at $0.60/1M.
+    assert compute_cost_usd(1_000_000, 0) == Decimal("0.15")
+    assert compute_cost_usd(0, 1_000_000) == Decimal("0.60")
+    assert compute_cost_usd(0, 0) == Decimal("0")
+
+
+def test_log_llm_call_appends_one_line_matching_the_model(tmp_path):
+    path = tmp_path / "llm_calls.jsonl"
+    log_llm_call(
+        call_type="generate_sql",
+        model="gpt-4o-mini",
+        prompt_tokens=1000,
+        completion_tokens=200,
+        latency_ms=850,
+        turn_id="turn-1",
+        session_id="sess-1",
+        path=path,
+    )
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    logged = LlmCallLog.model_validate_json(lines[0])
+
+    assert logged.call_type == "generate_sql"
+    assert logged.model == "gpt-4o-mini"
+    assert logged.turn_id == "turn-1"
+    assert logged.session_id == "sess-1"
+    assert logged.prompt_tokens == 1000
+    assert logged.completion_tokens == 200
+    assert logged.cost_usd == compute_cost_usd(1000, 200)
+    assert logged.latency_ms == 850
+    assert isinstance(logged.logged_at, datetime)
+
+
+def test_log_llm_call_turn_and_session_id_are_optional(tmp_path):
+    path = tmp_path / "llm_calls.jsonl"
+    log_llm_call(
+        call_type="narrative",
+        model="gpt-4o-mini",
+        prompt_tokens=500,
+        completion_tokens=50,
+        latency_ms=400,
+        path=path,
+    )
+
+    logged = LlmCallLog.model_validate_json(path.read_text(encoding="utf-8").splitlines()[0])
+    assert logged.turn_id is None
+    assert logged.session_id is None
