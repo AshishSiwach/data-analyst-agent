@@ -152,6 +152,12 @@ I wrote these before writing any code, and kept them updated as decisions change
 
 OpenAI GPT-4o-mini for structured outputs (no agent framework), DuckDB as a read-only database, `sqlglot` as a SQL guardrail, Streamlit for the UI and session state, a hand-rolled eval harness with a pandas-based comparator, Docker, and Streamlit Community Cloud for hosting.
 
+## CI
+
+Every push and pull request against `main` runs two jobs in [GitHub Actions](.github/workflows/ci.yml): one installs the project with `uv` and runs `ruff check` plus `ruff format --check`, the other runs the full pytest suite (251 tests, all mocked at the LLM boundary so no API key or network access is needed to pass). Neither job needs a secret, since the tests skip anything that needs the real database only if it isn't there, and the database committed in this repo already satisfies them.
+
+The 60-question eval harness deliberately isn't part of this. It's a real, paid GPT-4o-mini call per question and isn't seeded, so running it on every push would cost money and produce a noisy, flaky-looking check for a point or two of natural run-to-run drift. It stays a manual, deliberate step (see [Results](#results-from-the-last-full-run)), not a merge gate. There's no deployment step either: the Streamlit Community Cloud app redeploys itself automatically on every push to `main`, so there's nothing for a workflow to trigger.
+
 ## Definition of done, and where it stands
 
 - 95.0% / 95.0% / 90.0% basic, semantic, and adversarial accuracy, against floors of 75% / 55% / 40%. See [Results](#results-from-the-last-full-run).
