@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets - never baked into the image, passed at `docker run` time
+.env
+
+# Data / runtime artifacts - the entrypoint builds the DB fresh unless one
+# is mounted in as a volume; baking a stale one into the image would only
+# cause confusion about which data a given image tag actually reflects.
+*.duckdb
+*.db
+failures.jsonl
+query_audit.jsonl
+report/
+
+# VCS / OS / editor / agent tooling - irrelevant at runtime
+.git/
+.github/
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Design docs and tests aren't needed to run the app or eval harness
+_docs/
+tests/

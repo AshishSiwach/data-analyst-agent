@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -90,6 +91,14 @@ def _prompt_hash() -> str:
 
 
 def _git_commit_hash() -> str:
+    # The Docker image (S28) doesn't ship `.git` - `git rev-parse` has
+    # nothing to read there - so the image is built with the commit hash
+    # baked in as a `GIT_COMMIT` env var instead; that takes precedence
+    # when present, and the git call remains the path for every non-Docker
+    # run (local dev, CI).
+    env_commit = os.environ.get("GIT_COMMIT")
+    if env_commit:
+        return env_commit
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
