@@ -140,7 +140,30 @@ def render(chart_spec: ChartSpec, columns: list[ColumnSpec] | None = None) -> No
 
     if chart_spec.chart_type == "line":
         x = chart_spec.x_axis if chart_spec.x_axis in df.columns else df.columns[0]
-        df = df.set_index(x)
+        other_columns = [c for c in df.columns if c != x]
+        if len(other_columns) == 2:
+            # Three total columns - date, one more dimension, one metric -
+            # is a multi-series trend (e.g. "compare revenue trend for
+            # these 3 countries"), not a single line. st.line_chart needs
+            # wide format (one column per series); the data arrives long/
+            # tidy (one row per date+category pair), which st.line_chart
+            # doesn't auto-group - passed through unpivoted, it plots the
+            # categorical column as if it were numeric data and the
+            # metric column as an unsorted, repeated-index mess, which is
+            # exactly the garbled sawtooth chart a live user hit.
+            categorical_col, metric_col = other_columns
+            if pd.api.types.is_numeric_dtype(df[categorical_col]):
+                categorical_col, metric_col = metric_col, categorical_col
+            try:
+                df = df.pivot(index=x, columns=categorical_col, values=metric_col)
+            except (ValueError, KeyError):
+                # Defensive fallback only - GROUP BY month, country-style
+                # queries shouldn't produce duplicate (date, category)
+                # pairs, but a malformed query falling back to the old,
+                # imperfect-but-non-crashing rendering beats a UI crash.
+                df = df.set_index(x)
+        else:
+            df = df.set_index(x)
         st.line_chart(df)
     elif chart_spec.chart_type == "bar":
         x = chart_spec.x_axis if chart_spec.x_axis in df.columns else df.columns[0]

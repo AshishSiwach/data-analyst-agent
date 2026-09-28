@@ -225,3 +225,69 @@ def test_render_table_calls_st_dataframe(mock_st):
     ]
     render(spec, columns=columns)
     mock_st.dataframe.assert_called_once()
+
+
+# --- render(): the multi-series line-chart pivot fix, found via live
+# testing a "compare the monthly trend for these 3 countries"-style
+# follow-up - a 3-column (date, category, metric) result was passed to
+# st.line_chart unpivoted, plotting the category column as if it were
+# numeric data and producing a garbled, unsorted chart. ---
+
+
+@patch("data_analyst_agent.agent.chart_select.st")
+def test_render_line_with_three_columns_pivots_into_one_series_per_category(mock_st):
+    spec = ChartSpec(
+        chart_type="line",
+        data=[
+            ["2011-01-01", "EIRE", 21671.52],
+            ["2011-01-01", "Germany", 16451.43],
+            ["2011-02-01", "EIRE", 9674.14],
+            ["2011-02-01", "Germany", 8969.24],
+        ],
+        x_axis="month",
+        column_names=["month", "country", "monthly_revenue"],
+    )
+    render(spec)
+
+    df = mock_st.line_chart.call_args.args[0]
+    assert sorted(df.columns) == ["EIRE", "Germany"]
+    assert df.loc["2011-01-01", "EIRE"] == 21671.52
+    assert df.loc["2011-02-01", "Germany"] == 8969.24
+
+
+@patch("data_analyst_agent.agent.chart_select.st")
+def test_render_line_with_three_columns_pivots_regardless_of_column_order(mock_st):
+    # Category and metric swapped relative to the test above - the pivot
+    # logic detects which is which from the actual data, not position.
+    spec = ChartSpec(
+        chart_type="line",
+        data=[
+            ["2011-01-01", 21671.52, "EIRE"],
+            ["2011-01-01", 16451.43, "Germany"],
+        ],
+        x_axis="month",
+        column_names=["month", "monthly_revenue", "country"],
+    )
+    render(spec)
+
+    df = mock_st.line_chart.call_args.args[0]
+    assert sorted(df.columns) == ["EIRE", "Germany"]
+
+
+@patch("data_analyst_agent.agent.chart_select.st")
+def test_render_line_with_duplicate_date_category_pairs_falls_back_safely(mock_st):
+    # A malformed query (not what GROUP BY month, country should ever
+    # produce) with a duplicate (date, category) pair would make .pivot()
+    # raise - falls back to the old, imperfect-but-non-crashing behavior
+    # rather than a UI crash.
+    spec = ChartSpec(
+        chart_type="line",
+        data=[
+            ["2011-01-01", "EIRE", 100.0],
+            ["2011-01-01", "EIRE", 200.0],
+        ],
+        x_axis="month",
+        column_names=["month", "country", "monthly_revenue"],
+    )
+    render(spec)
+    mock_st.line_chart.assert_called_once()
