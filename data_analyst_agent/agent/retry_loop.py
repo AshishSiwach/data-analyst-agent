@@ -24,6 +24,17 @@ case showed the model would rather invent a plausible-but-wrong query
 (e.g. `WHERE country = 'Scotland'` returning 0 rows, reported as a normal
 success) than recognize a genuine schema gap.
 
+Post-v1 addition (see `_docs/phase2_memory.md`): when `conversation_memory`
+is given, every generated query that passes the schema-answerability check
+is also checked with `agent/conversation_memory.py::find_dropped_date_filters`
+against the previous turn's own SQL, *before* `run_sql` is called. A drop
+is treated exactly like a genuine SQL execution error - it consumes one of
+the 3 attempts and feeds a synthetic `prior_error` back into the next
+`generate_sql` call - rather than executing a query already known to have
+silently lost a carried-over date filter. Added as a code-level check,
+not more prompt wording, after three different prompt-only fixes each
+failed 4/4 live-tested runs to stop this specific failure shape.
+
 Not this module's job (left to S24's orchestrator, which is the layer
 that sees every LLM-invoking call in a turn, not just this one):
 - Incrementing `session.cost_spent_usd` from actual API usage. Post-v1,
@@ -45,6 +56,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from data_analyst_agent.agent.conversation_memory import find_dropped_date_filters
 from data_analyst_agent.agent.generate_sql import generate_sql
 from data_analyst_agent.agent.session import check_cost_cap, check_fast_fail, normalize
 from data_analyst_agent.db.run_sql import run_sql
@@ -119,6 +131,33 @@ def run_turn_sql(
             )
             _record_failure_for_fast_fail(session, question, len(attempts))
             return SqlRetryOutcome(status="declined", attempts=attempts)
+
+        if conversation_memory is not None and conversation_memory.recent_turns:
+            prior_sql = conversation_memory.recent_turns[-1].sql
+            dropped = find_dropped_date_filters(prior_sql, generated.sql)
+            if dropped:
+                message = (
+                    "This query dropped a date filter the previous turn's own query "
+                    f"had: {', '.join(dropped)}. If the founder's new question didn't "
+                    "ask to change or remove it, add it back to the query."
+                )
+                result = SqlExecutionResult(
+                    status="error", truncated=False, execution_ms=0, error_message=message
+                )
+                attempts.append(
+                    SqlAttempt(
+                        turn_id=resolved_turn_id,
+                        attempt_number=attempt_number,
+                        query_text=generated.sql,
+                        status="error",
+                        error_message=message,
+                        execution_ms=0,
+                        row_count=None,
+                        truncated=False,
+                    )
+                )
+                prior_error = message
+                continue
 
         result = run_sql(generated.sql, attempt_number=attempt_number, db_path=db_path)
         attempts.append(

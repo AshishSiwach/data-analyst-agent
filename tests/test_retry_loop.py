@@ -8,7 +8,12 @@ from unittest.mock import patch
 
 from data_analyst_agent.agent.retry_loop import MAX_ATTEMPTS, run_turn_sql
 from data_analyst_agent.agent.session import SessionState, normalize
-from data_analyst_agent.models.entities import GeneratedSql, SqlExecutionResult
+from data_analyst_agent.models.entities import (
+    ConversationMemory,
+    ConversationTurn,
+    GeneratedSql,
+    SqlExecutionResult,
+)
 
 NOW = datetime(2026, 9, 23, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -188,3 +193,84 @@ def test_declined_updates_failed_questions_cache_for_future_fast_fail(mock_gen, 
 
 def test_max_attempts_constant_is_three():
     assert MAX_ATTEMPTS == 3
+
+
+def _memory_with_prior_year_filter() -> ConversationMemory:
+    return ConversationMemory(
+        recent_turns=[
+            ConversationTurn(
+                question="top 3 countries by revenue outside UK in 2011",
+                sql=(
+                    "SELECT country FROM v_orders WHERE country <> 'UK' "
+                    "AND EXTRACT(YEAR FROM order_date) = 2011 "
+                    "GROUP BY country ORDER BY SUM(revenue) DESC LIMIT 3"
+                ),
+                answer_text="The top three countries were EIRE, Germany, and the Netherlands.",
+            )
+        ]
+    )
+
+
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_dropped_date_filter_is_caught_before_execution_and_retried(mock_gen, mock_run):
+    # generate_sql's first attempt drops the year filter (only inside the
+    # IN-subquery); the second attempt correctly keeps it on the outer
+    # query. Uses the real find_dropped_date_filters (not mocked) against
+    # real SQL strings, so this tests the actual integration, not just
+    # that some check function got called.
+    sql_missing_filter = (
+        "SELECT DATE_TRUNC('month', order_date) AS month, country, SUM(line_revenue) AS revenue "
+        "FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id "
+        "WHERE country IN (SELECT country FROM v_orders JOIN v_order_lines "
+        "ON v_orders.order_id = v_order_lines.order_id "
+        "WHERE country <> 'UK' AND EXTRACT(YEAR FROM order_date) = 2011 "
+        "GROUP BY country ORDER BY SUM(line_revenue) DESC LIMIT 3) "
+        "GROUP BY month, country"
+    )
+    sql_with_filter = (
+        "SELECT DATE_TRUNC('month', order_date) AS month, country, SUM(line_revenue) AS revenue "
+        "FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id "
+        "WHERE country IN ('EIRE', 'Germany', 'Netherlands') "
+        "AND EXTRACT(YEAR FROM order_date) = 2011 "
+        "GROUP BY month, country"
+    )
+    mock_gen.side_effect = [
+        GeneratedSql(can_answer_from_schema=True, sql=sql_missing_filter),
+        GeneratedSql(can_answer_from_schema=True, sql=sql_with_filter),
+    ]
+    mock_run.return_value = _success_result()
+
+    session = _session()
+    outcome = run_turn_sql(
+        "what was the monthly revenue trend of these 3 countries",
+        session,
+        conversation_memory=_memory_with_prior_year_filter(),
+    )
+
+    assert outcome.status == "success"
+    assert len(outcome.attempts) == 2
+    assert outcome.attempts[0].status == "error"
+    assert "EXTRACT(YEAR FROM order_date)" in outcome.attempts[0].error_message
+    assert outcome.attempts[1].status == "success"
+    # run_sql is only ever called for the corrected attempt - the first,
+    # known-bad query is never actually executed against the database.
+    mock_run.assert_called_once()
+    assert mock_gen.call_args_list[1].kwargs["prior_error"] == outcome.attempts[0].error_message
+
+
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_no_conversation_memory_never_runs_the_date_filter_check(mock_gen, mock_run):
+    # Zero behavior change for every caller that doesn't pass
+    # conversation_memory - including the eval harness and every existing
+    # test above this one in this file.
+    mock_gen.return_value = GeneratedSql(can_answer_from_schema=True, sql="SELECT 1")
+    mock_run.return_value = _success_result()
+
+    session = _session()
+    outcome = run_turn_sql("How many orders are there?", session, conversation_memory=None)
+
+    assert outcome.status == "success"
+    assert len(outcome.attempts) == 1
+    mock_run.assert_called_once()

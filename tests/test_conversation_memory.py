@@ -14,6 +14,7 @@ from data_analyst_agent.agent.conversation_memory import (
     WINDOW_SIZE,
     _SummaryCompletion,
     build_context_block,
+    find_dropped_date_filters,
     update_memory,
 )
 from data_analyst_agent.models.entities import ConversationMemory, ConversationTurn, SessionState
@@ -198,3 +199,120 @@ def test_oversized_fields_are_truncated_on_store():
     assert turn.question.endswith("... (truncated)")
     assert len(turn.sql) <= _MAX_FIELD_CHARS + len("... (truncated)")
     assert len(turn.answer_text) <= _MAX_FIELD_CHARS + len("... (truncated)")
+
+
+# --- find_dropped_date_filters: the code-level check added after three
+# prompt-only fixes each failed 4/4 live-tested runs against this exact
+# failure shape (see _docs/phase2_memory.md). ---
+
+_PRIOR_SQL_WITH_YEAR_FILTER = (
+    "SELECT country FROM v_orders WHERE country <> 'UK' "
+    "AND EXTRACT(YEAR FROM order_date) = 2011 "
+    "GROUP BY country ORDER BY SUM(revenue) DESC LIMIT 3"
+)
+
+
+def test_no_prior_sql_means_nothing_dropped():
+    assert find_dropped_date_filters(None, "SELECT 1") == []
+    assert find_dropped_date_filters("", "SELECT 1") == []
+
+
+def test_prior_sql_with_no_date_filter_means_nothing_to_carry_over():
+    prior_no_date = "SELECT country FROM v_orders GROUP BY country"
+    assert find_dropped_date_filters(prior_no_date, "SELECT country FROM v_orders") == []
+
+
+def test_flags_a_simple_dropped_year_filter():
+    new_sql = "SELECT country FROM v_orders WHERE country <> 'UK' GROUP BY country"
+    dropped = find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql)
+    assert dropped == ["EXTRACT(YEAR FROM order_date)"]
+
+
+def test_does_not_flag_when_the_filter_is_kept():
+    new_sql = (
+        "SELECT country FROM v_orders "
+        "WHERE country <> 'UK' AND EXTRACT(YEAR FROM order_date) = 2011 GROUP BY country"
+    )
+    assert find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql) == []
+
+
+def test_does_not_flag_a_deliberate_year_change():
+    # Same part + column, different value - the founder asked for a
+    # different year on purpose, not a case of the filter vanishing.
+    new_sql = (
+        "SELECT country FROM v_orders WHERE EXTRACT(YEAR FROM order_date) = 2010 GROUP BY country"
+    )
+    assert find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql) == []
+
+
+def test_flags_the_exact_reproduced_bug_filter_only_inside_an_in_subquery():
+    # The real failure this check exists for: the year filter survives
+    # only inside the IN(...) subquery that ranks the top-3 countries -
+    # it never scopes the outer query's own rows.
+    new_sql = """
+        SELECT DATE_TRUNC('month', order_date) AS month, country, SUM(line_revenue) AS revenue
+        FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id
+        WHERE country IN (
+            SELECT country
+            FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id
+            WHERE country <> 'United Kingdom' AND EXTRACT(YEAR FROM order_date) = 2011
+            GROUP BY country ORDER BY SUM(line_revenue) DESC LIMIT 3
+        )
+        GROUP BY month, country
+    """
+    dropped = find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql)
+    assert dropped == ["EXTRACT(YEAR FROM order_date)"]
+
+
+def test_does_not_flag_when_filter_is_on_both_outer_query_and_in_subquery():
+    new_sql = """
+        SELECT DATE_TRUNC('month', order_date) AS month, country, SUM(line_revenue) AS revenue
+        FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id
+        WHERE EXTRACT(YEAR FROM order_date) = 2011
+        AND country IN (
+            SELECT country
+            FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id
+            WHERE EXTRACT(YEAR FROM order_date) = 2011
+            GROUP BY country ORDER BY SUM(line_revenue) DESC LIMIT 3
+        )
+        GROUP BY month, country
+    """
+    assert find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql) == []
+
+
+def test_does_not_flag_a_filtered_cte_the_outer_query_reads_from_directly():
+    # The recommended-but-abandoned prompt fix's pattern: filter once in a
+    # CTE, have the outer query read from that CTE directly (no IN-subquery
+    # at all). The filter legitimately scopes the outer rows this way.
+    new_sql = """
+        WITH filtered AS (
+            SELECT country, order_date, line_revenue
+            FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id
+            WHERE EXTRACT(YEAR FROM order_date) = 2011 AND country <> 'United Kingdom'
+        ),
+        top_countries AS (
+            SELECT country FROM filtered GROUP BY country ORDER BY SUM(line_revenue) DESC LIMIT 3
+        )
+        SELECT DATE_TRUNC('month', order_date) AS month, country, SUM(line_revenue) AS revenue
+        FROM filtered
+        WHERE country IN (SELECT country FROM top_countries)
+        GROUP BY month, country
+    """
+    assert find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql) == []
+
+
+def test_flags_only_the_specific_filter_that_was_dropped():
+    prior = (
+        "SELECT country FROM v_orders WHERE EXTRACT(YEAR FROM order_date) = 2011 "
+        "AND EXTRACT(QUARTER FROM order_date) = 3 GROUP BY country"
+    )
+    new_sql = (
+        "SELECT country FROM v_orders WHERE EXTRACT(YEAR FROM order_date) = 2011 GROUP BY country"
+    )
+    assert find_dropped_date_filters(prior, new_sql) == ["EXTRACT(QUARTER FROM order_date)"]
+
+
+def test_unparseable_new_sql_does_not_raise():
+    # A genuine syntax error is db/sql_guard.py's job to catch - this
+    # check just needs to not crash on it.
+    find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, "SELECT FROM WHERE (((")

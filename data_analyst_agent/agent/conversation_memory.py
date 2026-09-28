@@ -39,6 +39,22 @@ system prompt verbatim. Without this framing, text ending up in a stored
 answer_text (in principle originating in a database column, e.g. a
 product description) would reach a future prompt one level more trusted
 than today's user-message framing gives the current question.
+
+`find_dropped_date_filters` is a deliberately code-enforced check, added
+after three different prompt-only attempts (worked example, literal SQL
+template, foolproof CTE-first restructure - see `_docs/phase2_memory.md`)
+all failed 4/4 live runs to stop the model from silently dropping a
+carried-over `EXTRACT(...)` date filter when a follow-up also carries over
+an entity list. Relying on wording alone for something this checkable
+isn't the right tradeoff once prompt iteration has been tried and failed
+this many times - `retry_loop.py` calls this after every `generate_sql`
+attempt and feeds a synthetic `prior_error` back for a real retry when it
+finds a drop, the same mechanism already used for genuine SQL execution
+errors. Deliberately narrow: only `EXTRACT(<part> FROM <column>)`
+comparisons are checked (the exact, reproduced failure shape), matched by
+part + column, not by the value compared against - so a follow-up that
+*deliberately* changes the year ("what about 2010 instead") still passes,
+and only a filter that disappears entirely is flagged.
 """
 
 from __future__ import annotations
@@ -46,12 +62,18 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import sqlglot
 from openai import OpenAI
 from pydantic import BaseModel
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from data_analyst_agent.agent.audit_log import log_llm_call
 from data_analyst_agent.agent.session import check_cost_cap
+from data_analyst_agent.db.sql_guard import DIALECT
 from data_analyst_agent.models.entities import ConversationMemory, ConversationTurn, SessionState
+
+_DATE_PART_COMPARISON_TYPES = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between)
 
 MODEL = "gpt-4o-mini"
 
@@ -170,3 +192,77 @@ def build_context_block(memory: ConversationMemory | None) -> str:
         sql_text = turn.sql or "(could not be answered)"
         parts.append(f"Q: {turn.question}\nSQL: {sql_text}\nA: {turn.answer_text}\n\n")
     return "".join(parts)
+
+
+def _membership_subqueries(tree: exp.Expression) -> list[exp.Expression]:
+    """Finds every subquery used only to produce a set of values for an
+    `IN (...)`/`EXISTS (...)` test. A date filter living only inside one
+    of these doesn't scope the enclosing query's own result rows the way
+    a top-level filter or a directly-read CTE does - it only decides
+    which values belong to the set - so nodes inside it are excluded from
+    `_extract_date_part_keys` entirely, not counted as "present"."""
+    subqueries: list[exp.Expression] = []
+    for node in tree.walk():
+        if isinstance(node, (exp.In, exp.Exists)):
+            for arg_name in ("query", "this"):
+                candidate = node.args.get(arg_name)
+                if isinstance(candidate, exp.Subquery):
+                    subqueries.append(candidate)
+    return subqueries
+
+
+def _is_within(node: exp.Expression, ancestors: list[exp.Expression]) -> bool:
+    current: exp.Expression | None = node
+    while current is not None:
+        if any(current is ancestor for ancestor in ancestors):
+            return True
+        current = current.parent
+    return False
+
+
+def _extract_date_part_keys(sql: str) -> set[tuple[str, str]]:
+    """Returns one (date_part, column) pair - e.g. ("YEAR", "order_date") -
+    per EXTRACT(<part> FROM <column>) comparison found in `sql`'s own
+    result-scoping clauses (top level, inside a CTE the query reads from),
+    regardless of what value each is compared against - excluding anything
+    living only inside an `IN (...)`/`EXISTS (...)` membership subquery
+    (see `_membership_subqueries`). Returns an empty set for SQL that
+    doesn't parse - this check only adds a constraint on top of
+    already-valid SQL; a syntax problem is `db/sql_guard.py`'s job, not
+    this one's."""
+    try:
+        tree = sqlglot.parse_one(sql, read=DIALECT)
+    except SqlglotError:
+        return set()
+
+    excluded = _membership_subqueries(tree)
+
+    keys: set[tuple[str, str]] = set()
+    for node in tree.walk():
+        if isinstance(node, exp.Extract) and isinstance(node.parent, _DATE_PART_COMPARISON_TYPES):
+            if node.this is None or node.expression is None:
+                continue
+            if _is_within(node, excluded):
+                continue
+            part = node.this.sql(dialect=DIALECT).upper()
+            column = node.expression.sql(dialect=DIALECT).lower()
+            keys.add((part, column))
+    return keys
+
+
+def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
+    """Compares the most recent turn's own SQL (`prior_sql`) against a
+    freshly generated follow-up query (`new_sql`): returns one
+    "EXTRACT(<part> FROM <column>)" string per date-part filter present in
+    `prior_sql` but entirely absent from `new_sql`. Empty list means
+    nothing was dropped - including whenever `prior_sql` is None/empty or
+    had no date-part filters of its own to begin with, since there's
+    nothing to carry forward in that case."""
+    if not prior_sql:
+        return []
+    prior_keys = _extract_date_part_keys(prior_sql)
+    if not prior_keys:
+        return []
+    new_keys = _extract_date_part_keys(new_sql)
+    missing = prior_keys - new_keys
+    return [f"EXTRACT({part} FROM {column})" for part, column in sorted(missing)]
