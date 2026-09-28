@@ -79,6 +79,8 @@ A few things it handles so grading stays fair:
 
 [`eval/harness.py`](data_analyst_agent/eval/harness.py) runs all 60 questions through the real agent, never a mock, and reports per-bucket accuracy, how many attempts each question needed, and the graceful failure rate. Every report is stamped with the commit and prompt hash it was generated from.
 
+A second harness, [`eval/multi_turn_harness.py`](data_analyst_agent/eval/multi_turn_harness.py), does the same thing for follow-up questions: a small, hand-authored set of multi-turn conversations, each graded turn by turn against one real, shared conversation memory (`uv run python -m data_analyst_agent.eval.multi_turn_harness --gold data_analyst_agent/eval/gold_multi_turn --out report_multi_turn/`). It exists because every multi-turn bug this project has hit - a dropped filter, a dropped ranking, a follow-up that quietly drifted to a different country - was found by me testing the app by hand, never by an automated check, until this did.
+
 ## Testing
 
 Separate from the eval harness above: 254 pytest tests across the codebase, everything mocked at the LLM boundary so the suite runs in about two minutes with no API key and no network access.

@@ -108,7 +108,7 @@ def _git_commit_hash() -> str:
         return "unknown"
 
 
-def _attempt_records_for_turn(audit_log_path: Path, turn_id: str) -> list[QueryAuditLog]:
+def attempt_records_for_turn(audit_log_path: Path, turn_id: str) -> list[QueryAuditLog]:
     if not audit_log_path.exists():
         return []
     records = []
@@ -141,39 +141,45 @@ def _describe_diff(agent_result: ResultData, gold_result: ResultData) -> str:
     return "values differ"
 
 
-def _grade(
-    run_id: str, question: GoldQuestion, answer: Answer, attempts_used: int, agent_sql: str
-) -> EvalResult:
-    if question.is_graceful_failure_case:
+def grade_turn(
+    gold_sql: str | None,
+    gold_result: ResultData | None,
+    is_graceful_failure_case: bool,
+    answer: Answer,
+) -> tuple[bool, ResultData | None, str | None]:
+    """The shared grading core behind both `eval/harness.py` (single-turn,
+    via `_grade` below) and `eval/multi_turn_harness.py` - operates on a
+    gold row's raw fields rather than on `GoldQuestion`/
+    `GoldConversationTurn` directly, so it works for either caller without
+    an import-time type dependency between the two gold-row shapes.
+    Returns `(passed, agent_result, diff)`; `agent_result` is `None`
+    whenever the row is a graceful-failure case or the turn didn't
+    succeed - see `harness.py`'s module docstring, note 2, for why
+    `agent_result` is reconstructed from `Answer.chart_spec.data` rather
+    than a raw `SqlExecutionResult`."""
+    if is_graceful_failure_case:
         # Graded on failure *shape* only, per scope.md: "did the failure
         # land in one of the three well-shaped categories" - not whether
         # the diagnosed category matches the gold row's expectation.
         passed = answer.status == "graceful_failure"
         diff = None if passed else f"expected a graceful failure, got status={answer.status!r}"
-        return EvalResult(
-            run_id=run_id,
-            question_id=question.question_id,
-            passed=passed,
-            agent_sql=agent_sql,
-            agent_result=None,
-            diff=diff,
-            attempts_used=attempts_used,
-        )
+        return passed, None, diff
 
     if answer.status != "success":
-        return EvalResult(
-            run_id=run_id,
-            question_id=question.question_id,
-            passed=False,
-            agent_sql=agent_sql,
-            agent_result=None,
-            diff=f"expected a successful answer, got status={answer.status!r}",
-            attempts_used=attempts_used,
-        )
+        return False, None, f"expected a successful answer, got status={answer.status!r}"
 
     agent_result = _reconstruct_agent_result(answer)
-    passed = compare(agent_result, question.gold_result)
-    diff = None if passed else _describe_diff(agent_result, question.gold_result)
+    passed = compare(agent_result, gold_result)
+    diff = None if passed else _describe_diff(agent_result, gold_result)
+    return passed, agent_result, diff
+
+
+def _grade(
+    run_id: str, question: GoldQuestion, answer: Answer, attempts_used: int, agent_sql: str
+) -> EvalResult:
+    passed, agent_result, diff = grade_turn(
+        question.gold_sql, question.gold_result, question.is_graceful_failure_case, answer
+    )
     return EvalResult(
         run_id=run_id,
         question_id=question.question_id,
@@ -268,7 +274,7 @@ def run_harness(
             failure_log_path=failure_log_path,
             llm_call_log_path=llm_call_log_path,
         )
-        records = _attempt_records_for_turn(audit_log_path, answer.turn_id)
+        records = attempt_records_for_turn(audit_log_path, answer.turn_id)
         attempts_used = len(records)
         agent_sql = records[-1].query_text if records else ""
 

@@ -17,6 +17,7 @@ failures.jsonl
 query_audit.jsonl
 llm_calls.jsonl
 report/
+report_multi_turn/
 
 # Exception: the built database at repo root is committed as a deployment
 # data artifact for S29 (Streamlit Community Cloud has no persistent disk

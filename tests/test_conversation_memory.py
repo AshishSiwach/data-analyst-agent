@@ -352,6 +352,29 @@ def test_still_flags_when_the_new_query_has_no_group_by_of_its_own():
     assert dropped == ["EXTRACT(YEAR FROM order_date)"]
 
 
+def test_still_flags_when_the_new_query_drops_both_the_entity_list_and_the_date_filter():
+    # Found live via eval/multi_turn_harness.py's entity_list_and_date_filter_carryover
+    # scenario, the same day the unrelated-topic gate above shipped: "what
+    # was their monthly revenue trend" dropped BOTH the country IN (...)
+    # restriction and the year filter at once, regrouping from country to
+    # month - country/month don't overlap, so the gate above would
+    # otherwise suppress this too, exactly like the unrelated-topic case,
+    # even though this is the original entity-list-and-date-filter-drop
+    # bug this whole check exists for, not a genuinely different subject.
+    # _has_date_grouping keeps the gate from suppressing itself here.
+    prior_sql = (
+        "SELECT country, SUM(net_revenue) AS revenue FROM v_orders "
+        "WHERE country <> 'United Kingdom' AND EXTRACT(YEAR FROM order_date) = 2011 "
+        "GROUP BY country ORDER BY revenue DESC, country ASC LIMIT 3"
+    )
+    new_sql = (
+        "SELECT DATE_TRUNC('month', order_date) AS month, SUM(line_revenue) AS revenue "
+        "FROM v_order_lines JOIN v_orders ON v_order_lines.order_id = v_orders.order_id "
+        "GROUP BY month ORDER BY month"
+    )
+    assert find_dropped_date_filters(prior_sql, new_sql) == ["EXTRACT(YEAR FROM order_date)"]
+
+
 # --- find_dropped_ranking_restrictions: added after fixing the date-filter
 # check surfaced a second, related failure - the model's correction
 # sometimes drops the "top N" ranking while fixing the date filter. ---

@@ -19,6 +19,8 @@ from data_analyst_agent.models.entities import (
     EvalRun,
     FailureDiagnosis,
     FailureLogEntry,
+    GoldConversation,
+    GoldConversationTurn,
     GoldQuestion,
     MetricDefinition,
     QueryAuditLog,
@@ -348,3 +350,89 @@ def test_conversation_turn_allows_null_sql_for_a_failed_turn():
         question="What about last quarter?", sql=None, answer_text="(could not be answered)"
     )
     assert turn.sql is None
+
+
+# --- GoldConversationTurn / GoldConversation: eval/multi_turn_harness.py's
+# gold-row shapes. Same graceful-failure/answerable shape validation as
+# GoldQuestion, minus bucket/question_id (see entities.py docstring). ---
+
+
+def test_gold_conversation_turn_graceful_failure_forbids_gold_sql():
+    with pytest.raises(ValidationError):
+        GoldConversationTurn(
+            question_text="Compare this to last year.",
+            gold_sql="SELECT 1",
+            is_graceful_failure_case=True,
+        )
+
+
+def test_gold_conversation_turn_graceful_failure_allows_null_sql():
+    turn = GoldConversationTurn(
+        question_text="Compare this to last year.",
+        is_graceful_failure_case=True,
+        expected_failure_category="ambiguity",
+    )
+    assert turn.gold_sql is None
+    assert turn.gold_result is None
+
+
+def test_gold_conversation_turn_graceful_failure_requires_expected_failure_category():
+    with pytest.raises(ValidationError):
+        GoldConversationTurn(
+            question_text="Compare this to last year.", is_graceful_failure_case=True
+        )
+
+
+def test_gold_conversation_turn_non_graceful_failure_forbids_expected_failure_category():
+    with pytest.raises(ValidationError):
+        GoldConversationTurn(
+            question_text="What is total revenue?",
+            gold_sql="SELECT 1",
+            gold_result=ResultData(**_result_data()),
+            is_graceful_failure_case=False,
+            expected_failure_category="ambiguity",
+        )
+
+
+def test_gold_conversation_turn_non_graceful_failure_requires_gold_sql():
+    with pytest.raises(ValidationError):
+        GoldConversationTurn(question_text="What is total revenue?", is_graceful_failure_case=False)
+
+
+def test_gold_conversation_holds_ordered_turns():
+    conversation = GoldConversation(
+        conversation_id="follow_up_resolution",
+        scenario="follow_up_resolution",
+        turns=[
+            GoldConversationTurn(
+                question_text="What was Q3 2011 UK revenue?",
+                gold_sql="SELECT SUM(net_revenue) FROM v_orders",
+                gold_result=ResultData(**_result_data()),
+                is_graceful_failure_case=False,
+            ),
+            GoldConversationTurn(
+                question_text="What about Germany?",
+                gold_sql="SELECT SUM(net_revenue) FROM v_orders WHERE country = 'Germany'",
+                gold_result=ResultData(**_result_data()),
+                is_graceful_failure_case=False,
+            ),
+        ],
+    )
+    assert len(conversation.turns) == 2
+    assert conversation.turns[0].question_text == "What was Q3 2011 UK revenue?"
+
+
+def test_gold_conversation_json_round_trip():
+    conversation = GoldConversation(
+        conversation_id="no_antecedent_declines",
+        scenario="no_antecedent_declines",
+        turns=[
+            GoldConversationTurn(
+                question_text="Compare this to last year.",
+                is_graceful_failure_case=True,
+                expected_failure_category="ambiguity",
+            )
+        ],
+    )
+    round_tripped = GoldConversation.model_validate_json(conversation.model_dump_json())
+    assert round_tripped == conversation

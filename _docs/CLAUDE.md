@@ -107,6 +107,7 @@ Slice-level verification commands in `implementation_plan.md` are written as pla
 - Unit/integration tests: `uv run pytest -q` (or the specific file named in the slice's verification command in `implementation_plan.md`).
 - Lint/format: `uv run ruff check . && uv run ruff format --check .`
 - Eval harness (once S25 exists): `uv run python -m data_analyst_agent.eval.harness --gold eval/gold --out report/`
+- Multi-turn eval harness (post-v1, see `phase2_memory.md`): `uv run python -m data_analyst_agent.eval.multi_turn_harness --gold eval/gold_multi_turn --out report_multi_turn/` — same idea, but runs a small set of hand-authored conversations turn by turn against a shared `ConversationMemory`, not single independent questions.
 - Local run (once S27 exists): `uv run streamlit run app/streamlit_app.py`
 - Docker (once S28 exists): `docker build -t data-analyst-agent . && docker run -p 8501:8501 data-analyst-agent`
 

@@ -321,6 +321,47 @@ def _group_by_columns(sql: str) -> set[str]:
     return columns
 
 
+def _has_date_grouping(sql: str) -> bool:
+    """True when `sql`'s own `GROUP BY` includes a date-derived expression
+    (`DATE_TRUNC(...)`/`EXTRACT(...)` used as a grouping/output column) -
+    i.e. the query is already doing some kind of date-based breakdown on
+    its own terms, and so is exactly the shape most likely to silently
+    lose a carried-over year filter and produce a trend spanning every
+    year in the dataset instead of just the one asked about. Found live,
+    the same day the GROUP-BY-overlap gate below shipped: a follow-up
+    ("their monthly revenue trend") that dropped *both* the entity list
+    and the year filter at once, regrouping from `country` to `month`,
+    slipped through ungated - `month`/`country` don't overlap, so the
+    gate (correctly, for the unrelated-topic case it was built for)
+    suppressed the check, but this wasn't an unrelated topic, just the
+    same bug in a shape the gate hadn't been checked against. A query
+    that groups by a date part is never the "unrelated topic" case the
+    gate exists for - it's always at least as likely to need the carried
+    filter as the original bug shape - so this keeps the gate from
+    suppressing itself here, regardless of GROUP BY overlap."""
+    try:
+        tree = sqlglot.parse_one(sql, read=DIALECT)
+    except SqlglotError:
+        return False
+    for node in tree.walk():
+        if not isinstance(node, exp.Select):
+            continue
+        # Checks the SELECT list, not just the GROUP BY clause - a query
+        # written as `SELECT DATE_TRUNC('month', order_date) AS month ...
+        # GROUP BY month` (the common, alias-referencing form) has the
+        # actual DATE_TRUNC/EXTRACT call only in the SELECT list; the
+        # GROUP BY clause itself just contains the bare alias `month`.
+        candidates = list(node.expressions)
+        group_node = node.args.get("group")
+        if group_node is not None:
+            candidates += group_node.expressions
+        for candidate in candidates:
+            rendered = candidate.sql(dialect=DIALECT).lower()
+            if "date_trunc" in rendered or "extract" in rendered:
+                return True
+    return False
+
+
 def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
     """Compares the most recent turn's own SQL (`prior_sql`) against a
     freshly generated follow-up query (`new_sql`): returns one
@@ -330,12 +371,17 @@ def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
     had no date-part filters of its own to begin with, since there's
     nothing to carry forward in that case.
 
-    Also empty whenever both queries have their own non-empty `GROUP BY`
-    and the two share no column - a structural signal the new question has
-    moved to an unrelated subject (different entity/dimension entirely,
-    e.g. products instead of countries) rather than dropping a filter it
-    should have carried forward. See the module docstring for the live
-    false positive this gate closes and why it's scoped this narrowly."""
+    Also empty whenever both queries have their own non-empty `GROUP BY`,
+    the two share no column, AND `new_sql` isn't itself grouping by a date
+    part (see `_has_date_grouping`) - a structural signal the new question
+    has moved to an unrelated subject (different entity/dimension
+    entirely, e.g. products instead of countries) rather than dropping a
+    filter it should have carried forward. See the module docstring for
+    the live false positive this gate closes and why it's scoped this
+    narrowly, and `_has_date_grouping`'s own docstring for the second live
+    bug (a follow-up dropping the date filter *and* the entity list
+    together) this additional condition exists to keep the gate from
+    reopening."""
     if not prior_sql:
         return []
     prior_keys = _extract_date_part_keys(prior_sql)
@@ -343,7 +389,12 @@ def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
         return []
     prior_groups = _group_by_columns(prior_sql)
     new_groups = _group_by_columns(new_sql)
-    if prior_groups and new_groups and not (prior_groups & new_groups):
+    if (
+        prior_groups
+        and new_groups
+        and not (prior_groups & new_groups)
+        and not _has_date_grouping(new_sql)
+    ):
         return []
     new_keys = _extract_date_part_keys(new_sql)
     missing = prior_keys - new_keys

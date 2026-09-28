@@ -214,3 +214,68 @@ def test_load_gold_questions_reads_every_jsonl_file_in_the_directory(tmp_path):
     questions = load_gold_questions(gold_dir)
 
     assert {q.question_id for q in questions} == {"b1", "a1"}
+
+
+# --- grade_turn: extracted from _grade so eval/multi_turn_harness.py can
+# reuse the exact same grading core. Regression guard on the extraction
+# itself - grade_turn must produce identical results to _grade's own
+# behavior for the fixtures already used above, not just "still passes". ---
+
+
+def test_grade_turn_matches_grade_for_a_successful_answerable_question():
+    from data_analyst_agent.eval.harness import grade_turn
+    from data_analyst_agent.models.entities import Answer, ChartSpec
+
+    answer = Answer(
+        turn_id="t1",
+        status="success",
+        answer_text="You have 52,612 orders.",
+        chart_spec=ChartSpec(chart_type="scalar", data=[[52612]], y_axis="order_count"),
+        sql_shown="SELECT COUNT(*) FROM v_orders",
+    )
+    question = _normal_question("synth_001")
+
+    passed, agent_result, diff = grade_turn(
+        question.gold_sql, question.gold_result, question.is_graceful_failure_case, answer
+    )
+
+    assert passed is True
+    assert diff is None
+    assert agent_result.rows == [[52612]]
+
+
+def test_grade_turn_matches_grade_for_a_graceful_failure_question():
+    from data_analyst_agent.eval.harness import grade_turn
+    from data_analyst_agent.models.entities import Answer
+
+    answer = Answer(turn_id="t1", status="graceful_failure", diagnosis=_DIAGNOSIS)
+    question = _graceful_failure_question("synth_003")
+
+    passed, agent_result, diff = grade_turn(
+        question.gold_sql, question.gold_result, question.is_graceful_failure_case, answer
+    )
+
+    assert passed is True
+    assert diff is None
+    assert agent_result is None
+
+
+def test_grade_turn_fails_a_wrong_but_successful_answer():
+    from data_analyst_agent.eval.harness import grade_turn
+    from data_analyst_agent.models.entities import Answer, ChartSpec
+
+    answer = Answer(
+        turn_id="t1",
+        status="success",
+        answer_text="You have 999,999 orders.",
+        chart_spec=ChartSpec(chart_type="scalar", data=[[999999]], y_axis="order_count"),
+        sql_shown="SELECT COUNT(*) FROM v_orders",
+    )
+    question = _normal_question("synth_001")
+
+    passed, agent_result, diff = grade_turn(
+        question.gold_sql, question.gold_result, question.is_graceful_failure_case, answer
+    )
+
+    assert passed is False
+    assert diff is not None

@@ -424,3 +424,73 @@ class EvalResult(BaseModel):
     agent_result: ResultData | None = None
     diff: str | None = None
     attempts_used: int
+
+
+class GoldConversationTurn(BaseModel):
+    """One turn in a multi-turn gold conversation (`eval/multi_turn_harness.py`)
+    - same answerable/graceful-failure shape as `GoldQuestion`, minus
+    `bucket` (a whole-conversation concept, not a per-turn one) and
+    `question_id` (a turn is addressed by its position within its
+    conversation, not its own id)."""
+
+    question_text: str
+    gold_sql: str | None = None
+    gold_result: ResultData | None = None
+    is_graceful_failure_case: bool
+    expected_failure_category: FailureCategory | None = None
+
+    @model_validator(mode="after")
+    def _check_graceful_failure_shape(self) -> GoldConversationTurn:
+        if self.is_graceful_failure_case:
+            if self.gold_sql is not None or self.gold_result is not None:
+                raise ValueError(
+                    "is_graceful_failure_case == True requires gold_sql and gold_result to be null"
+                )
+            if self.expected_failure_category is None:
+                raise ValueError(
+                    "is_graceful_failure_case == True requires expected_failure_category"
+                )
+        else:
+            if self.gold_sql is None or self.gold_result is None:
+                raise ValueError(
+                    "is_graceful_failure_case == False requires gold_sql and gold_result"
+                )
+            if self.expected_failure_category is not None:
+                raise ValueError(
+                    "is_graceful_failure_case == False must not carry expected_failure_category"
+                )
+        return self
+
+
+class GoldConversation(BaseModel):
+    """A named scenario plus its ordered turns, graded in sequence against
+    one shared `ConversationMemory` - the multi-turn counterpart to
+    `GoldQuestion`'s flat, independent rows. See
+    `eval/multi_turn_harness.py` and `_docs/phase2_memory.md`."""
+
+    conversation_id: str
+    scenario: str
+    turns: list[GoldConversationTurn]
+
+
+class MultiTurnEvalResult(BaseModel):
+    run_id: str
+    conversation_id: str
+    scenario: str
+    turn_index: int
+    passed: bool
+    agent_sql: str
+    agent_result: ResultData | None = None
+    diff: str | None = None
+    attempts_used: int
+
+
+class MultiTurnEvalRun(BaseModel):
+    run_id: str
+    git_commit_hash: str
+    prompt_hash: str
+    timestamp: datetime
+    turn_accuracy: float
+    per_scenario_accuracy: dict[str, float]
+    conversations_fully_passed: float
+    attempts_until_success_distribution: dict[int, int]
