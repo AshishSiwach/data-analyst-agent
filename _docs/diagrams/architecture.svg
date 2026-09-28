@@ -1,0 +1,206 @@
+<svg viewBox="0 0 1620 1260" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrowDashed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1620" height="1260" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="810" y="42" text-anchor="middle" font-size="25" font-weight="700" fill="#111827">Data Analyst Agent — System Architecture</text>
+  <text x="810" y="66" text-anchor="middle" font-size="13" fill="#6b7280">One founder question's full path through the system, plus the eval, monitoring, and deployment pipelines built around it.</text>
+
+  <!-- ============ CLIENT ============ -->
+  <rect x="60" y="105" width="170" height="55" rx="10" fill="#f9fafb" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="145" y="128" text-anchor="middle" font-size="13" font-weight="600" fill="#111827">Founder</text>
+  <text x="145" y="145" text-anchor="middle" font-size="11" fill="#6b7280">(browser)</text>
+
+  <rect x="60" y="200" width="360" height="92" rx="10" fill="#e8f1fb" stroke="#3b82c4" stroke-width="1.5"/>
+  <text x="240" y="224" text-anchor="middle" font-size="14" font-weight="700" fill="#1e3a5f">Streamlit UI</text>
+  <text x="240" y="242" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#1e3a5f">app/streamlit_app.py</text>
+  <text x="240" y="260" text-anchor="middle" font-size="11" fill="#3b6690">public · redeploys on every push</text>
+  <text x="240" y="276" text-anchor="middle" font-size="11" fill="#3b6690">to main (Streamlit Community Cloud)</text>
+
+  <line x1="145" y1="160" x2="145" y2="200" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)" transform="translate(95,0)"/>
+
+  <!-- ============ AGENT CORE container ============ -->
+  <rect x="40" y="330" width="1140" height="480" rx="14" fill="#fcfcfd" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="58" y="355" font-size="13" font-weight="700" fill="#4b5563" letter-spacing="1">AGENT CORE — agent/*.py</text>
+
+  <!-- Orchestrator -->
+  <rect x="460" y="370" width="300" height="70" rx="10" fill="#f3f4f6" stroke="#4b5563" stroke-width="1.8"/>
+  <text x="610" y="394" text-anchor="middle" font-size="14" font-weight="700" fill="#111827">Orchestrator</text>
+  <text x="610" y="411" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#374151">orchestrator.py</text>
+  <text x="610" y="427" text-anchor="middle" font-size="10.5" fill="#4b5563">ties one full turn together</text>
+
+  <!-- Conversation Memory -->
+  <rect x="60" y="370" width="360" height="92" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="240" y="394" text-anchor="middle" font-size="13.5" font-weight="700" fill="#312e81">Conversation Memory (post-v1)</text>
+  <text x="240" y="412" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#3730a3">conversation_memory.py</text>
+  <text x="240" y="429" text-anchor="middle" font-size="10.5" fill="#4338ca">sliding window (3 turns) +</text>
+  <text x="240" y="444" text-anchor="middle" font-size="10.5" fill="#4338ca">LLM summarization on overflow</text>
+
+  <!-- UI -> Orchestrator -->
+  <path d="M420,246 C445,246 445,405 460,405" fill="none" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="432" y="330" font-size="10.5" fill="#6b7280">question</text>
+
+  <!-- Conversation Memory <-> Orchestrator -->
+  <line x1="420" y1="410" x2="460" y2="405" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="460" y1="420" x2="420" y2="425" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Retry loop row -->
+  <rect x="460" y="480" width="200" height="92" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="560" y="505" text-anchor="middle" font-size="13" font-weight="700" fill="#312e81">Generate SQL</text>
+  <text x="560" y="523" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#3730a3">generate_sql.py</text>
+  <text x="560" y="540" text-anchor="middle" font-size="10.5" fill="#4338ca">LLM: question → SQL</text>
+  <text x="560" y="555" text-anchor="middle" font-size="10.5" fill="#4338ca">+ schema &amp; metric dictionary</text>
+
+  <rect x="690" y="480" width="190" height="92" rx="10" fill="#f3f4f6" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="785" y="505" text-anchor="middle" font-size="13" font-weight="700" fill="#111827">SQL Guard</text>
+  <text x="785" y="523" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#374151">db/sql_guard.py</text>
+  <text x="785" y="540" text-anchor="middle" font-size="10.5" fill="#4b5563">sqlglot parser —</text>
+  <text x="785" y="555" text-anchor="middle" font-size="10.5" fill="#4b5563">SELECT / WITH only</text>
+
+  <rect x="910" y="480" width="210" height="92" rx="10" fill="#f3f4f6" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="1015" y="505" text-anchor="middle" font-size="13" font-weight="700" fill="#111827">Run SQL</text>
+  <text x="1015" y="523" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#374151">db/run_sql.py</text>
+  <text x="1015" y="540" text-anchor="middle" font-size="10.5" fill="#4b5563">read-only · 5s timeout</text>
+  <text x="1015" y="555" text-anchor="middle" font-size="10.5" fill="#4b5563">10,000-row cap</text>
+
+  <line x1="660" y1="526" x2="690" y2="526" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="880" y1="526" x2="910" y2="526" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <line x1="610" y1="440" x2="560" y2="480" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- retry curve -->
+  <path d="M1015,480 C1015,455 560,455 560,480" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="787" y="452" text-anchor="middle" font-size="10.5" fill="#b91c1c">error → retry, attempt &lt; 3 (max 3 total)</text>
+
+  <!-- Diagnose (failure path) -->
+  <rect x="460" y="620" width="290" height="92" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="605" y="645" text-anchor="middle" font-size="13" font-weight="700" fill="#312e81">Diagnose</text>
+  <text x="605" y="663" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#3730a3">diagnosis.py</text>
+  <text x="605" y="680" text-anchor="middle" font-size="10.5" fill="#4338ca">LLM: failed trace → category</text>
+  <text x="605" y="695" text-anchor="middle" font-size="10.5" fill="#4338ca">(schema / ambiguity / bug) + rephrase</text>
+
+  <path d="M1015,572 C1015,600 605,600 605,620" fill="none" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="810" y="597" text-anchor="middle" font-size="10.5" fill="#6b7280">3/3 attempts exhausted</text>
+
+  <!-- success path -->
+  <rect x="910" y="620" width="210" height="70" rx="10" fill="#f3f4f6" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="1015" y="645" text-anchor="middle" font-size="13" font-weight="700" fill="#111827">Chart Select</text>
+  <text x="1015" y="663" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#374151">chart_select.py</text>
+  <text x="1015" y="679" text-anchor="middle" font-size="10.5" fill="#4b5563">deterministic — no LLM call</text>
+
+  <line x1="1015" y1="572" x2="1015" y2="620" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="1030" y="600" font-size="10.5" fill="#6b7280">success</text>
+
+  <rect x="910" y="720" width="210" height="80" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="1015" y="744" text-anchor="middle" font-size="13" font-weight="700" fill="#312e81">Narrative</text>
+  <text x="1015" y="762" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#3730a3">narrative.py</text>
+  <text x="1015" y="778" text-anchor="middle" font-size="10.5" fill="#4338ca">LLM: result → one sentence,</text>
+  <text x="1015" y="792" text-anchor="middle" font-size="10.5" fill="#4338ca">never states an unverified number</text>
+
+  <line x1="1015" y1="690" x2="1015" y2="720" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- answer back to UI -->
+  <path d="M910,760 C300,760 145,760 145,292" fill="none" stroke="#059669" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <text x="300" y="745" text-anchor="middle" font-size="10.5" fill="#047857">answer + chart, or graceful failure — back to the founder</text>
+
+  <!-- ============ DATA LAYER ============ -->
+  <rect x="460" y="845" width="440" height="100" rx="12" fill="#eafbf1" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="680" y="870" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">DuckDB — read-only connection</text>
+  <text x="680" y="888" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#166534">db/connection.py</text>
+  <text x="680" y="906" text-anchor="middle" font-size="10.5" fill="#166534">v_orders · v_order_lines · v_customers ·</text>
+  <text x="680" y="921" text-anchor="middle" font-size="10.5" fill="#166534">v_products · v_daily_revenue (data/views.py)</text>
+
+  <line x1="1015" y1="800" x2="1015" y2="825" stroke="#374151" stroke-width="1.5"/>
+  <line x1="1015" y1="825" x2="750" y2="825" stroke="#374151" stroke-width="1.5"/>
+  <line x1="750" y1="825" x2="720" y2="845" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="900" y="818" text-anchor="middle" font-size="10.5" fill="#6b7280">executes generated SQL against</text>
+
+  <!-- ============ EXTERNAL LLM ============ -->
+  <rect x="1260" y="470" width="300" height="100" rx="12" fill="#fff7e6" stroke="#d97706" stroke-width="1.5"/>
+  <text x="1410" y="500" text-anchor="middle" font-size="14" font-weight="700" fill="#78350f">OpenAI API</text>
+  <text x="1410" y="519" text-anchor="middle" font-size="12" fill="#92400e">GPT-4o-mini, structured outputs</text>
+  <text x="1410" y="537" text-anchor="middle" font-size="10.5" fill="#92400e">every LLM box on this diagram calls out</text>
+  <text x="1410" y="552" text-anchor="middle" font-size="10.5" fill="#92400e">to this one model — no agent framework</text>
+
+  <path d="M660,500 C1000,440 1200,460 1260,500" fill="none" stroke="#9333ea" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#arrowDashed)"/>
+  <path d="M1120,760 C1200,700 1230,600 1260,545" fill="none" stroke="#9333ea" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#arrowDashed)"/>
+  <path d="M750,650 C1000,650 1150,600 1260,555" fill="none" stroke="#9333ea" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#arrowDashed)"/>
+  <path d="M240,370 C260,320 900,320 1260,495" fill="none" stroke="#9333ea" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#arrowDashed)"/>
+
+  <!-- ============ OBSERVABILITY ============ -->
+  <rect x="1260" y="620" width="300" height="90" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+  <text x="1410" y="645" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1e293b">JSONL Logs</text>
+  <text x="1410" y="663" text-anchor="middle" font-size="10.5" font-family="Consolas, monospace" fill="#334155">query_audit · failures · llm_calls</text>
+  <text x="1410" y="680" text-anchor="middle" font-size="10.5" fill="#475569">append-only, written on every attempt</text>
+
+  <line x1="760" y1="405" x2="1260" y2="655" stroke="#475569" stroke-width="1.3" stroke-dasharray="3 3"/>
+  <text x="1000" y="440" text-anchor="middle" font-size="10.5" fill="#64748b">every attempt &amp; LLM call logged</text>
+
+  <rect x="1440" y="740" width="120" height="45" rx="8" fill="#f9fafb" stroke="#6b7280" stroke-width="1.3"/>
+  <text x="1500" y="768" text-anchor="middle" font-size="12" font-weight="600" fill="#111827">Operator</text>
+
+  <rect x="1260" y="800" width="300" height="95" rx="12" fill="#e8f1fb" stroke="#3b82c4" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="1410" y="826" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1e3a5f">Monitoring Dashboard</text>
+  <text x="1410" y="844" text-anchor="middle" font-size="10.5" font-family="Consolas, monospace" fill="#1e3a5f">app/dashboard.py</text>
+  <text x="1410" y="861" text-anchor="middle" font-size="10.5" fill="#3b6690">reliability · latency · token cost ·</text>
+  <text x="1410" y="877" text-anchor="middle" font-size="10.5" fill="#3b6690">retry rate — local only, not deployed</text>
+
+  <line x1="1410" y1="710" x2="1410" y2="800" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1500" y1="785" x2="1460" y2="800" stroke="#374151" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+  <!-- ============ EVALUATION ============ -->
+  <rect x="40" y="965" width="1140" height="120" rx="14" fill="#fdf2f8" stroke="#db2777" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="58" y="989" font-size="13" font-weight="700" fill="#9d174d" letter-spacing="1">EVALUATION — offline, calls the agent core directly, no UI in the loop</text>
+
+  <rect x="140" y="1003" width="480" height="68" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="1.3"/>
+  <text x="380" y="1026" text-anchor="middle" font-size="12.5" font-weight="700" fill="#831843">eval/harness.py</text>
+  <text x="380" y="1043" text-anchor="middle" font-size="10.5" fill="#9d174d">60 hand-written single-turn questions</text>
+  <text x="380" y="1059" text-anchor="middle" font-size="10.5" fill="#9d174d">basic · semantic · adversarial buckets</text>
+
+  <rect x="660" y="1003" width="480" height="68" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="1.3"/>
+  <text x="900" y="1026" text-anchor="middle" font-size="12.5" font-weight="700" fill="#831843">eval/multi_turn_harness.py</text>
+  <text x="900" y="1043" text-anchor="middle" font-size="10.5" fill="#9d174d">7 hand-authored conversations, graded</text>
+  <text x="900" y="1059" text-anchor="middle" font-size="10.5" fill="#9d174d">turn-by-turn against one shared memory</text>
+
+  <path d="M380,1003 C380,870 500,700 460,700" fill="none" stroke="#db2777" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrowDashed)"/>
+  <path d="M900,1003 C1080,890 1180,700 750,655" fill="none" stroke="#db2777" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrowDashed)"/>
+
+  <!-- ============ CI / DEPLOYMENT ============ -->
+  <rect x="40" y="1120" width="1540" height="105" rx="14" fill="#ecfeff" stroke="#0891b2" stroke-width="1.5"/>
+  <text x="58" y="1144" font-size="13" font-weight="700" fill="#155e75" letter-spacing="1">CI &amp; DEPLOYMENT</text>
+
+  <rect x="120" y="1158" width="300" height="52" rx="10" fill="#cffafe" stroke="#0891b2" stroke-width="1.3"/>
+  <text x="270" y="1180" text-anchor="middle" font-size="12.5" font-weight="700" fill="#164e63">GitHub Actions CI</text>
+  <text x="270" y="1197" text-anchor="middle" font-size="10.5" fill="#155e75">ruff + pytest on every push / PR</text>
+
+  <rect x="540" y="1158" width="320" height="52" rx="10" fill="#cffafe" stroke="#0891b2" stroke-width="1.3"/>
+  <text x="700" y="1180" text-anchor="middle" font-size="12.5" font-weight="700" fill="#164e63">Streamlit Community Cloud</text>
+  <text x="700" y="1197" text-anchor="middle" font-size="10.5" fill="#155e75">auto-deploys on every push to main</text>
+
+  <rect x="980" y="1158" width="300" height="52" rx="10" fill="#cffafe" stroke="#0891b2" stroke-width="1.3"/>
+  <text x="1130" y="1180" text-anchor="middle" font-size="12.5" font-weight="700" fill="#164e63">Docker image</text>
+  <text x="1130" y="1197" text-anchor="middle" font-size="10.5" fill="#155e75">entrypoint.sh builds the DB if missing</text>
+
+  <line x1="420" y1="1184" x2="540" y2="1184" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M420,1178 C480,1160 900,1160 980,1178" fill="none" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============ LEGEND ============ -->
+  <g font-size="10.5">
+    <rect x="1260" y="95" width="16" height="16" rx="3" fill="#eef2ff" stroke="#6366f1"/>
+    <text x="1282" y="107" fill="#374151">LLM call</text>
+    <rect x="1260" y="117" width="16" height="16" rx="3" fill="#f3f4f6" stroke="#4b5563"/>
+    <text x="1282" y="129" fill="#374151">deterministic code</text>
+    <rect x="1400" y="95" width="16" height="16" rx="3" fill="#eafbf1" stroke="#16a34a"/>
+    <text x="1422" y="107" fill="#374151">data layer</text>
+    <rect x="1400" y="117" width="16" height="16" rx="3" fill="#f1f5f9" stroke="#475569"/>
+    <text x="1422" y="129" fill="#374151">observability</text>
+  </g>
+</svg>
