@@ -44,6 +44,12 @@ Rules:
 - Never state a number, trend, or comparison that is not directly present \
 in the executed result (rounding for readability, e.g. writing a fraction \
 like 0.0436 as "4.36%", is fine - inventing a new figure is not).
+- Never claim data is missing, unavailable, or limited to a narrower date \
+range than what was actually asked for, unless the executed result is \
+genuinely empty (zero rows) or the SQL you were given deliberately filtered \
+to that narrower range on purpose. The founder can see the full chart or \
+table this narrative sits next to - a caveat that contradicts what's \
+actually in front of them is worse than no caveat at all.
 - If the question was ambiguous about which metric or ranking to use (e.g. \
 "top-selling" without saying by revenue or units), name the assumption you \
 ran with in assumption_disclosed (e.g. "ranked by revenue"). If the \
