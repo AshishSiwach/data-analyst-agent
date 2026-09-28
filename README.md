@@ -24,7 +24,7 @@ All 30 steps of the [build plan](_docs/implementation_plan.md) are done. The age
 
 ## How it actually works
 
-![System architecture diagram: a founder's question flows from the Streamlit UI into the orchestrator, through a bounded generate-SQL / guard / run-SQL retry loop against a read-only DuckDB semantic layer, then either a deterministic chart-select and narrative LLM call on success or a diagnosis LLM call on failure - with conversation memory, OpenAI GPT-4o-mini, JSONL logging feeding a monitoring dashboard, two offline eval harnesses, and the CI/deployment pipeline shown around it.](_docs/diagrams/architecture.svg)
+![System architecture diagram: a founder's question flows from the Streamlit UI into the orchestrator, through a bounded generate-SQL / guard / run-SQL retry loop against a read-only DuckDB semantic layer, then either a deterministic chart-select and narrative LLM call on success or a diagnosis LLM call on failure - with conversation memory, OpenAI GPT-4o-mini, JSONL logging feeding a monitoring dashboard, two offline eval harnesses, and the CI/deployment pipeline shown around it.](_docs/diagrams/architecture.webp)
 
 Nothing here is an open-ended agent freely deciding what to do next. It's a fixed pipeline, and I mean that as a design choice, not a limitation: generate a SQL query, validate it, run it read-only with a 5 second timeout and a 10,000 row cap. If it fails, the error goes back to the model and it gets up to three attempts total. If it succeeds, a plain deterministic rule (no LLM involved) picks a chart type, and a small model wraps the result in one sentence a founder could read. If all three attempts fail, a second model call looks at the failure and explains why, then suggests a better way to ask.
 
