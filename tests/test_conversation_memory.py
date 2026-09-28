@@ -319,6 +319,39 @@ def test_unparseable_new_sql_does_not_raise():
     find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, "SELECT FROM WHERE (((")
 
 
+def test_does_not_flag_when_the_new_query_has_moved_to_an_unrelated_topic():
+    # Found live: "which products are the best sellers in the UK" after a
+    # multi-turn conversation about country revenue rankings - a fresh
+    # question with a completely different GROUP BY dimension (product, not
+    # country), not a follow-up that should carry the year filter forward.
+    # Without this gate the check forced this unrelated question into a
+    # pointless retry loop (and, in one live run, into adding an
+    # unrequested year filter just to satisfy it).
+    prior_sql = (
+        "SELECT DATE_TRUNC('month', order_date) AS month, country, SUM(line_revenue) AS revenue "
+        "FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id "
+        "WHERE EXTRACT(YEAR FROM order_date) = 2011 "
+        "AND country IN ('Netherlands', 'EIRE', 'Germany') "
+        "GROUP BY month, country"
+    )
+    new_sql = (
+        "SELECT product_id, description, SUM(line_revenue) AS revenue "
+        "FROM v_orders JOIN v_order_lines ON v_orders.order_id = v_order_lines.order_id "
+        "WHERE country = 'United Kingdom' GROUP BY product_id, description "
+        "ORDER BY revenue DESC LIMIT 5"
+    )
+    assert find_dropped_date_filters(prior_sql, new_sql) == []
+
+
+def test_still_flags_when_the_new_query_has_no_group_by_of_its_own():
+    # The overlap gate only applies when *both* queries group by something -
+    # a scalar single-entity follow-up ("what about Germany?") has no
+    # GROUP BY at all, so it stays fully covered by the unconditional check.
+    new_sql = "SELECT SUM(revenue) FROM v_orders WHERE country = 'Germany'"
+    dropped = find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, new_sql)
+    assert dropped == ["EXTRACT(YEAR FROM order_date)"]
+
+
 # --- find_dropped_ranking_restrictions: added after fixing the date-filter
 # check surfaced a second, related failure - the model's correction
 # sometimes drops the "top N" ranking while fixing the date filter. ---

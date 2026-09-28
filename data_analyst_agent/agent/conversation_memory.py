@@ -56,6 +56,30 @@ part + column, not by the value compared against - so a follow-up that
 *deliberately* changes the year ("what about 2010 instead") still passes,
 and only a filter that disappears entirely is flagged.
 
+Found live, post-shipping: `find_dropped_date_filters` fired unconditionally
+on *any* missing `EXTRACT(...)` filter, with no check for whether the new
+question was even about the same subject as the prior turn - "which
+products are the best sellers in the UK" after a multi-turn conversation
+about country revenue rankings got forced into a pointless (and once,
+answer-corrupting) retry loop to restore a year filter the new,
+unrelated, product-grouped question never needed. Fixed with a narrow
+gate, not a broader rewrite: `find_dropped_date_filters` now only applies
+when the two queries' own `GROUP BY` columns actually overlap (via
+`_group_by_columns`, reusing `_extract_ranking_limits`'s existing
+whole-tree walk) - and only when *both* sides have a non-empty `GROUP BY`
+to compare, so a scalar single-entity follow-up ("what about Germany?"),
+which has no `GROUP BY` of its own, is left fully covered by the
+unconditional check exactly as before. Every one of this check's existing
+true-positive tests already has overlapping `GROUP BY` columns (the whole
+point of the follow-ups it targets - a trend/comparison across a carried-
+over entity list), so this gate closes the false positive with zero
+regression risk to the cases it was built for. Deliberately not applied to
+`find_dropped_ranking_restrictions` below - that check's own reproduced
+bug fixture has *no* overlapping `GROUP BY` at all (the ranking itself is
+what got dropped from the `GROUP BY`), so the same gate would silently
+break the one case that check exists to catch; its narrower `<>`-only-
+with-no-bounding signal already limits false positives on its own.
+
 `find_dropped_ranking_restrictions` exists because fixing the above
 surfaced a second, related failure: the model's *correction* after being
 told about a dropped date filter sometimes over-corrects by copying the
@@ -272,6 +296,31 @@ def _extract_date_part_keys(sql: str) -> set[tuple[str, str]]:
     return keys
 
 
+def _group_by_columns(sql: str) -> set[str]:
+    """Returns every column referenced in a `GROUP BY` clause anywhere in
+    `sql` (top level or nested, mirroring `_extract_ranking_limits`'s own
+    whole-tree walk) - the closest available structural proxy for "what
+    entity/dimension is this query fundamentally about." Used only to gate
+    `find_dropped_date_filters` against firing on a new question that has
+    moved on to an unrelated subject; returns an empty set for SQL that
+    doesn't parse or has no `GROUP BY` at all."""
+    try:
+        tree = sqlglot.parse_one(sql, read=DIALECT)
+    except SqlglotError:
+        return set()
+
+    columns: set[str] = set()
+    for node in tree.walk():
+        if not isinstance(node, exp.Select):
+            continue
+        group_node = node.args.get("group")
+        if group_node is None:
+            continue
+        for group_expr in group_node.expressions:
+            columns.add(group_expr.sql(dialect=DIALECT).lower())
+    return columns
+
+
 def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
     """Compares the most recent turn's own SQL (`prior_sql`) against a
     freshly generated follow-up query (`new_sql`): returns one
@@ -279,11 +328,22 @@ def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
     `prior_sql` but entirely absent from `new_sql`. Empty list means
     nothing was dropped - including whenever `prior_sql` is None/empty or
     had no date-part filters of its own to begin with, since there's
-    nothing to carry forward in that case."""
+    nothing to carry forward in that case.
+
+    Also empty whenever both queries have their own non-empty `GROUP BY`
+    and the two share no column - a structural signal the new question has
+    moved to an unrelated subject (different entity/dimension entirely,
+    e.g. products instead of countries) rather than dropping a filter it
+    should have carried forward. See the module docstring for the live
+    false positive this gate closes and why it's scoped this narrowly."""
     if not prior_sql:
         return []
     prior_keys = _extract_date_part_keys(prior_sql)
     if not prior_keys:
+        return []
+    prior_groups = _group_by_columns(prior_sql)
+    new_groups = _group_by_columns(new_sql)
+    if prior_groups and new_groups and not (prior_groups & new_groups):
         return []
     new_keys = _extract_date_part_keys(new_sql)
     missing = prior_keys - new_keys
