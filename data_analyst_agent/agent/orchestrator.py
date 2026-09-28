@@ -8,6 +8,16 @@ This is the only module that sees every LLM-invoking call in a turn
 via `run_turn_sql`/`diagnose`), so it - not S20's retry loop - is where
 `session.turn_ids` gets appended, per `retry_loop.py`'s own docstring.
 
+Post-v1 fix, found via live testing: `wrap()` raising `NarrativeGuardrailViolation`
+was never caught anywhere - a real, if narrow, crash risk that predates
+the conversation-memory feature and has nothing to do with it, just
+never surfaced until a longer live session hit it. Caught here now and
+converted into a `graceful_failure` `Answer` with a locally-built
+`FailureDiagnosis` (`category="bug"`) rather than routed through
+`diagnose()`, since that function reasons over a *failed* `SqlAttempt`
+trace and every attempt in this path succeeded - there's nothing SQL-ish
+to diagnose, only a wording problem in an otherwise-correct answer.
+
 `declined` (`SqlRetryOutcome.status`, added post-S23) has no dedicated
 mapping in `Architecture.md`'s diagram, which predates it - it is treated
 identically to `exhausted`/`fast_fail`: all three route through `diagnose()`
@@ -51,12 +61,13 @@ from data_analyst_agent.agent.audit_log import log_attempt, log_failure
 from data_analyst_agent.agent.chart_select import build_chart_spec
 from data_analyst_agent.agent.conversation_memory import update_memory
 from data_analyst_agent.agent.diagnosis import diagnose
-from data_analyst_agent.agent.narrative import wrap
+from data_analyst_agent.agent.narrative import NarrativeGuardrailViolation, wrap
 from data_analyst_agent.agent.retry_loop import run_turn_sql
 from data_analyst_agent.agent.session import check_cost_cap
 from data_analyst_agent.models.entities import (
     Answer,
     ConversationMemory,
+    FailureDiagnosis,
     FailureLogEntry,
     ResultData,
     SessionState,
@@ -153,15 +164,47 @@ def answer_question(
     result = outcome.result
     result_data = ResultData(columns=result.columns, rows=result.rows)
     chart_spec = build_chart_spec(result_data)
-    narrative = wrap(
-        question,
-        result,
-        chart_spec,
-        client=client,
-        turn_id=turn_id,
-        session_id=session.session_id,
-        llm_call_log_path=llm_call_log_path,
-    )
+    try:
+        narrative = wrap(
+            question,
+            result,
+            chart_spec,
+            client=client,
+            turn_id=turn_id,
+            session_id=session.session_id,
+            llm_call_log_path=llm_call_log_path,
+        )
+    except NarrativeGuardrailViolation:
+        # The SQL succeeded and the result is trustworthy - only the
+        # narrative wording wasn't. Not a diagnose()-shaped failure (that
+        # function reasons over a failed *SqlAttempt* trace; here every
+        # attempt succeeded), so the diagnosis is constructed directly
+        # rather than routed through another LLM call. Without this catch,
+        # `NarrativeGuardrailViolation` propagates unhandled and crashes
+        # the whole turn - the guardrail's entire purpose is to stop a
+        # bad answer from reaching the founder, and letting it also take
+        # down the app instead defeats that purpose.
+        diagnosis = FailureDiagnosis(
+            category="bug",
+            explanation=(
+                "The generated answer stated a number that wasn't actually in the "
+                "query result - a wording bug, not a problem with the question."
+            ),
+            rephrase_suggestion="Try asking again, or rephrase the question slightly.",
+        )
+        log_failure(
+            FailureLogEntry(
+                turn_id=turn_id,
+                session_id=session.session_id,
+                question_text=question,
+                attempts=outcome.attempts,
+                diagnosis=diagnosis,
+                fast_fail_triggered=False,
+                logged_at=datetime.now(timezone.utc),
+            ),
+            path=failure_log_path,
+        )
+        return Answer(turn_id=turn_id, status="graceful_failure", diagnosis=diagnosis)
 
     if check_cost_cap(session):
         return Answer(turn_id=turn_id, status="budget_stop")

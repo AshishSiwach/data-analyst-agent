@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
+from data_analyst_agent.agent.narrative import NarrativeGuardrailViolation
 from data_analyst_agent.agent.orchestrator import answer_question
 from data_analyst_agent.models.entities import (
     ColumnSpec,
@@ -359,3 +360,30 @@ def test_cost_cap_tripped_by_the_summarization_call_overrides_success_to_budget_
 
     assert answer.status == "budget_stop"
     mock_update_memory.assert_called_once()
+
+
+@patch("data_analyst_agent.agent.orchestrator.log_attempt")
+@patch("data_analyst_agent.agent.orchestrator.log_failure")
+@patch("data_analyst_agent.agent.orchestrator.wrap")
+@patch("data_analyst_agent.agent.orchestrator.run_turn_sql")
+def test_narrative_guardrail_violation_is_caught_not_crashed(
+    mock_run_turn_sql, mock_wrap, mock_log_failure, mock_log_attempt
+):
+    # A real, previously-unhandled crash risk found via live testing:
+    # wrap() raising NarrativeGuardrailViolation used to propagate all
+    # the way up and crash the turn instead of failing gracefully.
+    attempts = [_attempt()]
+    mock_run_turn_sql.return_value = SqlRetryOutcome(
+        status="success", result=_success_result(), attempts=attempts
+    )
+    mock_wrap.side_effect = NarrativeGuardrailViolation("stated an ungrounded number")
+
+    answer = answer_question("How many orders are there?", _session())
+
+    assert answer.status == "graceful_failure"
+    assert answer.diagnosis is not None
+    assert answer.diagnosis.category == "bug"
+    mock_log_failure.assert_called_once()
+    logged_entry = mock_log_failure.call_args[0][0]
+    assert logged_entry.attempts == attempts
+    assert logged_entry.fast_fail_triggered is False
