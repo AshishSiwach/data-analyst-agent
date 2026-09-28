@@ -26,14 +26,18 @@ success) than recognize a genuine schema gap.
 
 Post-v1 addition (see `_docs/phase2_memory.md`): when `conversation_memory`
 is given, every generated query that passes the schema-answerability check
-is also checked with `agent/conversation_memory.py::find_dropped_date_filters`
-against the previous turn's own SQL, *before* `run_sql` is called. A drop
-is treated exactly like a genuine SQL execution error - it consumes one of
-the 3 attempts and feeds a synthetic `prior_error` back into the next
-`generate_sql` call - rather than executing a query already known to have
-silently lost a carried-over date filter. Added as a code-level check,
-not more prompt wording, after three different prompt-only fixes each
-failed 4/4 live-tested runs to stop this specific failure shape.
+is also checked against the previous turn's own SQL with
+`agent/conversation_memory.py::find_dropped_date_filters` and
+`find_dropped_ranking_restrictions`, *before* `run_sql` is called. Either
+kind of drop is treated exactly like a genuine SQL execution error - it
+consumes one of the 3 attempts and feeds a synthetic `prior_error` back
+into the next `generate_sql` call - rather than executing a query already
+known to have silently lost carried-over context. Added as a code-level
+check, not more prompt wording, after three different prompt-only fixes
+each failed 4/4 live-tested runs to stop the date-filter failure shape;
+the ranking-restriction check exists because fixing the date-filter one
+surfaced a second failure - the model's *correction* sometimes dropped
+the "top N" restriction while fixing the date filter.
 
 Not this module's job (left to S24's orchestrator, which is the layer
 that sees every LLM-invoking call in a turn, not just this one):
@@ -56,7 +60,10 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from data_analyst_agent.agent.conversation_memory import find_dropped_date_filters
+from data_analyst_agent.agent.conversation_memory import (
+    find_dropped_date_filters,
+    find_dropped_ranking_restrictions,
+)
 from data_analyst_agent.agent.generate_sql import generate_sql
 from data_analyst_agent.agent.session import check_cost_cap, check_fast_fail, normalize
 from data_analyst_agent.db.run_sql import run_sql
@@ -134,12 +141,14 @@ def run_turn_sql(
 
         if conversation_memory is not None and conversation_memory.recent_turns:
             prior_sql = conversation_memory.recent_turns[-1].sql
-            dropped = find_dropped_date_filters(prior_sql, generated.sql)
-            if dropped:
+            problems = find_dropped_date_filters(
+                prior_sql, generated.sql
+            ) + find_dropped_ranking_restrictions(prior_sql, generated.sql)
+            if problems:
                 message = (
-                    "This query dropped a date filter the previous turn's own query "
-                    f"had: {', '.join(dropped)}. If the founder's new question didn't "
-                    "ask to change or remove it, add it back to the query."
+                    "This query dropped something the previous turn's own query had: "
+                    f"{', '.join(problems)}. If the founder's new question didn't ask "
+                    "to change or remove it, add it back to the query."
                 )
                 result = SqlExecutionResult(
                     status="error", truncated=False, execution_ms=0, error_message=message

@@ -15,6 +15,7 @@ from data_analyst_agent.agent.conversation_memory import (
     _SummaryCompletion,
     build_context_block,
     find_dropped_date_filters,
+    find_dropped_ranking_restrictions,
     update_memory,
 )
 from data_analyst_agent.models.entities import ConversationMemory, ConversationTurn, SessionState
@@ -316,3 +317,76 @@ def test_unparseable_new_sql_does_not_raise():
     # A genuine syntax error is db/sql_guard.py's job to catch - this
     # check just needs to not crash on it.
     find_dropped_date_filters(_PRIOR_SQL_WITH_YEAR_FILTER, "SELECT FROM WHERE (((")
+
+
+# --- find_dropped_ranking_restrictions: added after fixing the date-filter
+# check surfaced a second, related failure - the model's correction
+# sometimes drops the "top N" ranking while fixing the date filter. ---
+
+_PRIOR_SQL_WITH_TOP_3_RANKING = (
+    "SELECT country, SUM(revenue) FROM v_orders "
+    "WHERE EXTRACT(YEAR FROM order_date) = 2011 AND country <> 'United Kingdom' "
+    "GROUP BY country ORDER BY SUM(revenue) DESC LIMIT 3"
+)
+
+
+def test_no_prior_sql_means_no_ranking_dropped():
+    assert find_dropped_ranking_restrictions(None, "SELECT 1") == []
+
+
+def test_prior_sql_with_no_ranking_means_nothing_to_carry_over():
+    prior_no_ranking = "SELECT SUM(revenue) FROM v_orders WHERE country = 'UK'"
+    assert find_dropped_ranking_restrictions(prior_no_ranking, "SELECT 1 FROM v_orders") == []
+
+
+def test_flags_the_exact_reproduced_bug_broad_exclusion_with_no_bounding():
+    # The real failure this check exists for: the model "fixes" a dropped
+    # date filter by copying the prior turn's whole WHERE clause verbatim,
+    # which restores the exclusion but loses the LIMIT-based ranking that
+    # bounded it down to 3 specific countries.
+    broken = (
+        "SELECT DATE_TRUNC('month', order_date) AS month, SUM(line_revenue) AS revenue "
+        "FROM v_orders WHERE EXTRACT(YEAR FROM order_date) = 2011 "
+        "AND country <> 'United Kingdom' GROUP BY month"
+    )
+    dropped = find_dropped_ranking_restrictions(_PRIOR_SQL_WITH_TOP_3_RANKING, broken)
+    assert dropped == [
+        "the top 3 restriction on country (only a broad exclusion "
+        "remains, not a specific set of values)"
+    ]
+
+
+def test_does_not_flag_a_literal_in_list_of_the_right_entities():
+    new_sql = (
+        "SELECT month, country, SUM(revenue) FROM v_orders "
+        "WHERE country IN ('EIRE', 'Germany', 'Netherlands') GROUP BY month, country"
+    )
+    assert find_dropped_ranking_restrictions(_PRIOR_SQL_WITH_TOP_3_RANKING, new_sql) == []
+
+
+def test_does_not_flag_a_re_derived_subquery_ranking():
+    new_sql = (
+        "SELECT month, country FROM v_orders WHERE country IN "
+        "(SELECT country FROM v_orders GROUP BY country ORDER BY SUM(revenue) DESC LIMIT 3) "
+        "GROUP BY month, country"
+    )
+    assert find_dropped_ranking_restrictions(_PRIOR_SQL_WITH_TOP_3_RANKING, new_sql) == []
+
+
+def test_does_not_flag_a_deliberate_single_value_narrowing():
+    # "What about just Germany specifically" - a valid, different kind of
+    # follow-up, not the ranking-dropped failure shape.
+    new_sql = "SELECT month, SUM(revenue) FROM v_orders WHERE country = 'Germany' GROUP BY month"
+    assert find_dropped_ranking_restrictions(_PRIOR_SQL_WITH_TOP_3_RANKING, new_sql) == []
+
+
+def test_does_not_flag_when_the_column_is_not_referenced_at_all():
+    # Deliberately conservative: a genuinely broader follow-up ("show me
+    # every country instead") looks identical to this from the SQL alone -
+    # not flagging avoids forcing a valid question into a retry loop.
+    new_sql = "SELECT month, SUM(revenue) FROM v_orders GROUP BY month"
+    assert find_dropped_ranking_restrictions(_PRIOR_SQL_WITH_TOP_3_RANKING, new_sql) == []
+
+
+def test_unparseable_new_sql_does_not_raise_for_ranking_check():
+    find_dropped_ranking_restrictions(_PRIOR_SQL_WITH_TOP_3_RANKING, "SELECT FROM WHERE (((")

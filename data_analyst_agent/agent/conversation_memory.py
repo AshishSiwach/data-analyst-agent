@@ -55,6 +55,28 @@ comparisons are checked (the exact, reproduced failure shape), matched by
 part + column, not by the value compared against - so a follow-up that
 *deliberately* changes the year ("what about 2010 instead") still passes,
 and only a filter that disappears entirely is flagged.
+
+`find_dropped_ranking_restrictions` exists because fixing the above
+surfaced a second, related failure: the model's *correction* after being
+told about a dropped date filter sometimes over-corrects by copying the
+prior turn's whole `WHERE` clause verbatim - which restores the date
+filter, but silently drops the "top N by revenue" ranking that had been
+correctly re-derived (as a subquery) in the attempt just before. The
+result looks like `country <> 'United Kingdom'` (every non-UK country)
+where `country IN (SELECT ... LIMIT 3)` (just the three that were asked
+about) used to be. This check is more heuristic than the date-filter one
+and deliberately conservative about it, specifically to avoid the false
+positive that matters most here: a genuine "show me all countries
+instead of just the top 3" follow-up must not get forced into a retry
+loop it doesn't need. It only flags a ranked column when the new query
+references that column *exclusively* through a broad exclusion (`<>`/
+`!=`) with no bounding signal anywhere (no `LIMIT`-based ranking, no
+literal `IN (...)` list, no plain `=`) - not when the column is narrowed
+to one specific value, not when it's re-derived via any bounded form,
+and not when the new query doesn't reference the column at all (the
+last case is deliberately left unflagged, since a genuinely broader
+follow-up looks exactly like that and there's no reliable way to tell
+the two apart from the SQL alone).
 """
 
 from __future__ import annotations
@@ -266,3 +288,111 @@ def find_dropped_date_filters(prior_sql: str | None, new_sql: str) -> list[str]:
     new_keys = _extract_date_part_keys(new_sql)
     missing = prior_keys - new_keys
     return [f"EXTRACT({part} FROM {column})" for part, column in sorted(missing)]
+
+
+def _extract_ranking_limits(sql: str) -> set[tuple[str, int]]:
+    """Returns one (column, n) pair per "GROUP BY <column> ... LIMIT <n>"
+    ranking pattern found anywhere in `sql` (top level or nested inside a
+    subquery/CTE - unlike the date-filter check, a ranking legitimately
+    *belongs* inside a subquery that re-derives it, so nothing is excluded
+    here). This is the "top N <entities>" shape a follow-up needs to keep
+    some form of."""
+    try:
+        tree = sqlglot.parse_one(sql, read=DIALECT)
+    except SqlglotError:
+        return set()
+
+    results: set[tuple[str, int]] = set()
+    for node in tree.walk():
+        if not isinstance(node, exp.Select):
+            continue
+        limit_node = node.args.get("limit")
+        group_node = node.args.get("group")
+        if limit_node is None or group_node is None:
+            continue
+        try:
+            n = int(limit_node.expression.sql(dialect=DIALECT))
+        except (TypeError, ValueError):
+            continue
+        for group_expr in group_node.expressions:
+            results.add((group_expr.sql(dialect=DIALECT).lower(), n))
+    return results
+
+
+def _bounded_columns(sql: str) -> set[str]:
+    """Returns every column meaningfully bounded to a specific subset
+    somewhere in `sql` - via a ranking LIMIT (any N, see
+    `_extract_ranking_limits`), a literal `IN (...)` list, or a plain
+    equality - as opposed to only ever excluded (`<>`/`!=`) or left
+    unconstrained. Narrowing to exactly one value (a plain `=`) counts as
+    bounded, not dropped - a follow-up that deliberately picks one entity
+    out of a previously-ranked list is a valid, different kind of
+    follow-up, not this failure shape."""
+    try:
+        tree = sqlglot.parse_one(sql, read=DIALECT)
+    except SqlglotError:
+        return set()
+
+    bounded: set[str] = {col for col, _n in _extract_ranking_limits(sql)}
+    for node in tree.walk():
+        if isinstance(node, exp.In) and isinstance(node.this, exp.Column):
+            expressions = node.args.get("expressions")
+            if expressions and all(isinstance(e, exp.Literal) for e in expressions):
+                bounded.add(node.this.sql(dialect=DIALECT).lower())
+        elif isinstance(node, exp.EQ):
+            for side, other in ((node.this, node.expression), (node.expression, node.this)):
+                if isinstance(side, exp.Column) and isinstance(other, exp.Literal):
+                    bounded.add(side.sql(dialect=DIALECT).lower())
+    return bounded
+
+
+def _columns_excluded_only(sql: str) -> set[str]:
+    """Columns referenced via a broad exclusion (`<>`/`!=`) somewhere in
+    `sql` but never bounded to a specific subset anywhere else - the
+    signature a follow-up's `WHERE` clause has right after silently
+    losing a carried-over ranking restriction (e.g. `country <>
+    'United Kingdom'` on its own, with no ranking or list bounding it
+    back down to a handful of countries)."""
+    try:
+        tree = sqlglot.parse_one(sql, read=DIALECT)
+    except SqlglotError:
+        return set()
+
+    excluded_only: set[str] = set()
+    for node in tree.walk():
+        if isinstance(node, exp.NEQ):
+            for side in (node.this, node.expression):
+                if isinstance(side, exp.Column):
+                    excluded_only.add(side.sql(dialect=DIALECT).lower())
+    return excluded_only - _bounded_columns(sql)
+
+
+def find_dropped_ranking_restrictions(prior_sql: str | None, new_sql: str) -> list[str]:
+    """Compares `prior_sql`'s own "top N by <metric>" ranking pattern(s)
+    against `new_sql`: for each ranked column, flags it only when
+    `new_sql` references that column exclusively through a broad
+    exclusion with no bounding signal anywhere (see `_columns_excluded_only`).
+    Deliberately does not flag a column `new_sql` doesn't reference at
+    all - a genuinely broader follow-up ("show me every country instead")
+    looks identical to that from the SQL alone, and there's no reliable
+    way to tell the two apart without risking a false-positive retry loop
+    on a perfectly valid question."""
+    if not prior_sql:
+        return []
+    prior_rankings = _extract_ranking_limits(prior_sql)
+    if not prior_rankings:
+        return []
+
+    new_bounded = _bounded_columns(new_sql)
+    new_excluded_only = _columns_excluded_only(new_sql)
+
+    missing = []
+    for column, n in sorted(prior_rankings):
+        if column in new_bounded:
+            continue
+        if column in new_excluded_only:
+            missing.append(
+                f"the top {n} restriction on {column} (only a broad exclusion "
+                "remains, not a specific set of values)"
+            )
+    return missing
