@@ -191,6 +191,71 @@ def test_declined_updates_failed_questions_cache_for_future_fast_fail(mock_gen, 
     mock_run.assert_not_called()
 
 
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_decline_after_a_sql_error_is_not_final_and_the_next_attempt_can_succeed(
+    mock_gen, mock_run
+):
+    # Found live: attempt 1 wrote growth-rate SQL that hit "window function
+    # calls cannot be nested", attempt 2 declined ("schema can't compute
+    # growth rates"), ending the turn on a question the model had just
+    # tried to answer. A decline after SQL was already written must not be
+    # final - attempt 3 gets told to fix the error and succeeds.
+    mock_gen.side_effect = [
+        GeneratedSql(can_answer_from_schema=True, sql="SELECT bad_nested_window"),
+        GeneratedSql(can_answer_from_schema=False, reason="schema can't compute growth rates"),
+        GeneratedSql(can_answer_from_schema=True, sql="SELECT good"),
+    ]
+    mock_run.side_effect = [
+        _error_result("Binder Error: window function calls cannot be nested"),
+        _success_result(),
+    ]
+
+    outcome = run_turn_sql("Which country grew fastest?", _session())
+
+    assert outcome.status == "success"
+    assert [a.status for a in outcome.attempts] == ["error", "rejected", "success"]
+    assert mock_run.call_count == 2  # the declined attempt never reaches run_sql
+    third_call_prior_error = mock_gen.call_args_list[2].kwargs["prior_error"]
+    assert "do not decline" in third_call_prior_error
+    assert "window function calls cannot be nested" in third_call_prior_error
+
+
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_decline_after_a_sql_error_still_respects_the_three_attempt_cap(mock_gen, mock_run):
+    # Error, then decline, then decline again: no fourth call, and the turn
+    # ends as exhausted (not "declined") since SQL was written along the way.
+    mock_gen.side_effect = [
+        GeneratedSql(can_answer_from_schema=True, sql="SELECT bad"),
+        GeneratedSql(can_answer_from_schema=False, reason="can't"),
+        GeneratedSql(can_answer_from_schema=False, reason="still can't"),
+    ]
+    mock_run.side_effect = [_error_result("boom")]
+
+    session = _session()
+    outcome = run_turn_sql("Which country grew fastest?", session)
+
+    assert outcome.status == "exhausted"
+    assert mock_gen.call_count == MAX_ATTEMPTS
+    assert [a.status for a in outcome.attempts] == ["error", "rejected", "rejected"]
+    assert session.failed_questions_cache[normalize("Which country grew fastest?")] == 3
+
+
+@patch("data_analyst_agent.agent.retry_loop.run_sql")
+@patch("data_analyst_agent.agent.retry_loop.generate_sql")
+def test_a_first_attempt_decline_is_still_final(mock_gen, mock_run):
+    # The original decline rule is unchanged where it belongs: nothing was
+    # written yet, so a decline is a real schema-gap verdict, not a give-up.
+    mock_gen.return_value = GeneratedSql(can_answer_from_schema=False, reason="no Scotland data")
+
+    outcome = run_turn_sql("How many orders came from Scotland?", _session())
+
+    assert outcome.status == "declined"
+    assert mock_gen.call_count == 1
+    mock_run.assert_not_called()
+
+
 def test_max_attempts_constant_is_three():
     assert MAX_ATTEMPTS == 3
 

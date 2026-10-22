@@ -24,6 +24,17 @@ case showed the model would rather invent a plausible-but-wrong query
 (e.g. `WHERE country = 'Scotland'` returning 0 rows, reported as a normal
 success) than recognize a genuine schema gap.
 
+That decline is only honored when no earlier attempt this turn already
+wrote SQL. Found live post-v1: a growth-rate question's attempt 1 hit a
+plain binder error ("window function calls cannot be nested"), and
+attempt 2 - shown that error - declined with "the schema can't compute
+growth rates", ending the turn on a question the model had just tried to
+answer (the same shape as an earlier "column not found" -> "column not
+available" give-up). A decline after SQL was already written contradicts
+that attempt, so it's logged as a rejected attempt but not final: the next
+attempt is told it is answerable and to fix the error. It still consumes
+one of the 3 attempts, so the hard cap is unchanged.
+
 Post-v1 addition (see `_docs/phase2_memory.md`): when `conversation_memory`
 is given, every generated query that passes the schema-answerability check
 is also checked against the previous turn's own SQL with
@@ -124,6 +135,7 @@ def run_turn_sql(
             return SqlRetryOutcome(status="budget_stop", attempts=attempts)
 
         if not generated.can_answer_from_schema:
+            already_wrote_sql = any(a.query_text for a in attempts)
             attempts.append(
                 SqlAttempt(
                     turn_id=resolved_turn_id,
@@ -136,6 +148,20 @@ def run_turn_sql(
                     truncated=False,
                 )
             )
+            if already_wrote_sql:
+                # A decline after an earlier attempt already wrote SQL for
+                # this same question contradicts that attempt - the model
+                # judged it answerable one call ago. This is a retry-time
+                # give-up after a SQL error ("window function calls cannot
+                # be nested", "column not found"), not a real schema gap,
+                # so it isn't honored: the model is told to fix the error.
+                prior_error = (
+                    "On an earlier attempt this turn you already wrote a query for this "
+                    "same question, so it IS answerable from the schema - declining now is "
+                    f"wrong. That earlier query failed with: {prior_error}. Fix that error "
+                    "in the SQL and try again; do not decline."
+                )
+                continue
             _record_failure_for_fast_fail(session, question, len(attempts))
             return SqlRetryOutcome(status="declined", attempts=attempts)
 
